@@ -124,26 +124,74 @@ describe('profile_dataset tool', () => {
     expect(Object.keys(props)).toEqual(['path', 'maxSample', 'maxRows', 'maxBytes'])
   })
 
-  it('returns schema, missing rates, and sample values for a real CSV file', async () => {
+  it('returns schema, missing rates, sample values, and stats for a real CSV file', async () => {
     const ctx = await setup()
     const path = await makeCsv('name,age,score\nalice,30,0.9\nbob,,0.7\ncarol,25,\n')
     const result = await callTool(ctx, 'profile_dataset', { path })
     expect(result.isError).toBe(false)
     if (result.isError) throw new Error('expected success')
-    expect(result.value).toEqual({
-      path,
-      rowCount: 3,
-      columnCount: 3,
-      bytes: Buffer.byteLength('name,age,score\nalice,30,0.9\nbob,,0.7\ncarol,25,\n'),
-      rowsProfiled: 3,
-      sampled: false,
-      truncated: false,
-      columns: [
-        { name: 'name', kind: 'string', missing: 0, missingRate: 0, unique: 3, sample: ['alice', 'bob', 'carol'] },
-        { name: 'age', kind: 'number', missing: 1, missingRate: 1 / 3, unique: 2, sample: ['30', '25'] },
-        { name: 'score', kind: 'number', missing: 1, missingRate: 1 / 3, unique: 2, sample: ['0.9', '0.7'] },
-      ],
-    })
+    const value = result.value as {
+      path: string
+      rowCount: number
+      columnCount: number
+      bytes: number
+      rowsProfiled: number
+      sampled: boolean
+      truncated: boolean
+      columns: Array<{
+        name: string
+        kind: string
+        missing: number
+        missingRate: number
+        unique: number
+        sample: string[]
+        stats?: { n: number; min: number; max: number; mean: number; std: number | null; p25: number; p50: number; p75: number }
+      }>
+    }
+    expect(value.rowCount).toBe(3)
+    expect(value.columnCount).toBe(3)
+    expect(value.bytes).toBe(Buffer.byteLength('name,age,score\nalice,30,0.9\nbob,,0.7\ncarol,25,\n'))
+    expect(value.rowsProfiled).toBe(3)
+    expect(value.sampled).toBe(false)
+    expect(value.truncated).toBe(false)
+
+    const [name, age, score] = value.columns
+    expect(name).toEqual({ name: 'name', kind: 'string', missing: 0, missingRate: 0, unique: 3, sample: ['alice', 'bob', 'carol'] })
+
+    expect(age).toMatchObject({ name: 'age', kind: 'number', missing: 1, unique: 2, sample: ['30', '25'] })
+    expect(age.missingRate).toBeCloseTo(1 / 3, 10)
+    expect(age.stats).toBeDefined()
+    expect(age.stats!.n).toBe(2)
+    expect(age.stats!.min).toBe(25)
+    expect(age.stats!.max).toBe(30)
+    expect(age.stats!.mean).toBe(27.5)
+    expect(age.stats!.std).toBeCloseTo(3.5355339059327378, 10)
+    expect(age.stats!.p25).toBe(26.25)
+    expect(age.stats!.p50).toBe(27.5)
+    expect(age.stats!.p75).toBe(28.75)
+
+    expect(score).toMatchObject({ name: 'score', kind: 'number', missing: 1, unique: 2, sample: ['0.9', '0.7'] })
+    expect(score.missingRate).toBeCloseTo(1 / 3, 10)
+    expect(score.stats!.min).toBe(0.7)
+    expect(score.stats!.max).toBe(0.9)
+    expect(score.stats!.mean).toBeCloseTo(0.8, 10)
+    expect(score.stats!.std).toBeCloseTo(0.1414213562373095, 10)
+    expect(score.stats!.p25).toBeCloseTo(0.75, 10)
+    expect(score.stats!.p50).toBeCloseTo(0.8, 10)
+    expect(score.stats!.p75).toBeCloseTo(0.85, 10)
+  })
+
+  it('infers datetime columns and omits stats for them', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('joined,score\n2024-01-01,0.9\n2023-05-05,0.7\n')
+    const result = await callTool(ctx, 'profile_dataset', { path })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const columns = (result.value as { columns: Array<{ name: string; kind: string; stats?: unknown }> }).columns
+    expect(columns[0]).toMatchObject({ name: 'joined', kind: 'datetime' })
+    expect('stats' in columns[0]!).toBe(false)
+    expect(columns[1]).toMatchObject({ name: 'score', kind: 'number' })
+    expect(columns[1]!.stats).toBeDefined()
   })
 
   it('caps sample values per column via maxSample', async () => {

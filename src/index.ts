@@ -99,7 +99,7 @@ const skillProvider: SkillProvider = {
 export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'profile_dataset',
-    description: 'Profile a CSV file: returns the row count, column count, file size in bytes, and one entry per column with its inferred kind (number/boolean/string), missing count and rate, distinct-value count, and up to 5 distinct sample values. Use this to understand a dataset before writing any analysis code. Large files are sampled: `maxRows` caps the rows profiled (head plus every k-th row) and `maxBytes` caps the bytes read; the result reports `rowsProfiled`/`sampled`/`truncated` so the model knows the profile may be approximate.',
+    description: 'Profile a CSV file: returns the row count, column count, file size in bytes, and one entry per column with its inferred kind (number/boolean/string/datetime), missing count and rate, distinct-value count, sample values, and — for number columns — real distribution stats (n, min, max, mean, std, quartiles p25/p50/p75). Use this to understand a dataset before writing any analysis code. Large files are sampled: `maxRows` caps the rows profiled (head plus every k-th row) and `maxBytes` caps the bytes read; the result reports `rowsProfiled`/`sampled`/`truncated` so the model knows the stats may be approximate.',
     parameters: {
       path: { type: 'string', required: true, description: 'Absolute path to the CSV file.' },
       maxSample: { type: 'integer', description: 'How many distinct sample values to return per column. Defaults to 5.' },
@@ -126,11 +126,25 @@ export function apply(ctx: Context): void {
               additionalProperties: false,
               properties: {
                 name: { type: 'string', required: true },
-                kind: { type: 'string', required: true, enum: ['number', 'boolean', 'string'] },
+                kind: { type: 'string', required: true, enum: ['number', 'boolean', 'string', 'datetime'] },
                 missing: { type: 'integer', required: true },
                 missingRate: { type: 'number', required: true },
                 unique: { type: 'integer', required: true },
                 sample: { type: 'array', required: true, items: { type: 'string' } },
+                stats: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    n: { type: 'integer', required: true },
+                    min: { type: 'number', required: true },
+                    max: { type: 'number', required: true },
+                    mean: { type: 'number', required: true },
+                    std: { oneOf: [{ type: 'number' }, { type: 'null' }], required: true },
+                    p25: { type: 'number', required: true },
+                    p50: { type: 'number', required: true },
+                    p75: { type: 'number', required: true },
+                  },
+                },
               },
             },
           },
@@ -142,9 +156,12 @@ export function apply(ctx: Context): void {
           + (value.sampled ? `, profiled ${value.rowsProfiled} sampled rows` : '')
           + (value.truncated ? ', truncated at byte cap' : '')
           + '. '
-          + value.columns.map(c =>
-            `${c.name}[${c.kind}] missing=${c.missing}(${(c.missingRate * 100).toFixed(1)}%) unique=${c.unique} sample=${c.sample.join('|')}`,
-          ).join('; '),
+          + value.columns.map(c => {
+            const stats = c.stats
+              ? ` stats=min ${c.stats.min} max ${c.stats.max} mean ${c.stats.mean} std ${c.stats.std === null ? 'n/a' : c.stats.std.toFixed(3)} q25/50/75=${c.stats.p25},${c.stats.p50},${c.stats.p75}`
+              : ''
+            return `${c.name}[${c.kind}] missing=${c.missing}(${(c.missingRate * 100).toFixed(1)}%) unique=${c.unique} sample=${c.sample.join('|')}${stats}`
+          }).join('; '),
       }],
     },
     async execute(args, exec) {

@@ -1,6 +1,6 @@
 import { open } from 'node:fs/promises'
 
-export type ColumnKind = 'number' | 'boolean' | 'string'
+export type ColumnKind = 'number' | 'boolean' | 'string' | 'datetime'
 
 /** One parsed CSV cell: `null` for an empty field. */
 type Cell = string | null
@@ -15,6 +15,25 @@ interface Table {
   sampled: boolean
 }
 
+/**
+ * Distribution statistics for a numeric column, computed on the non-missing
+ * values of the rows actually read (which may be a sample; `sampled`/
+ * `truncated` on the dataset profile say how approximate the numbers are).
+ */
+export interface NumericStats {
+  /** Number of non-missing values the statistics were computed on. */
+  n: number
+  min: number
+  max: number
+  mean: number
+  /** Sample standard deviation (ddof=1); `null` when `n < 2`. */
+  std: number | null
+  /** Linear-interpolation quartiles, matching numpy/pandas defaults. */
+  p25: number
+  p50: number
+  p75: number
+}
+
 /** A column profile, in model-facing canonical value shape. */
 export interface ColumnProfile {
   name: string
@@ -23,6 +42,8 @@ export interface ColumnProfile {
   missingRate: number
   unique: number
   sample: string[]
+  /** Present only for `number` columns. */
+  stats?: NumericStats
 }
 
 /** The `profile_dataset` canonical result. */
@@ -193,15 +214,38 @@ export function parseCsv(text: string, opts: ParseCsvOptions = {}): Table {
   return { headers, rows, totalDataLines: dataLines.length, sampled }
 }
 
+/** Padded ISO dates/timestamps (`2024-01-01`, `2024-01-01T10:30:00Z`, space-separated times). */
+const DATETIME_RE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/
+/** Padded slash dates (`2024/01/01`, with optional time). */
+const SLASH_DATE_RE = /^\d{4}\/\d{2}\/\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/
+
+/**
+ * Whether a cell value looks like a calendar date or timestamp. The regex
+ * pins the shape (so bare years like `2024` stay numbers); `Date.parse`
+ * rejects impossible dates like `2024-13-01`.
+ * @param value - the cell value.
+ * @returns true for ISO or slash dates with an optional time component.
+ */
+export function isDatetimeValue(value: string): boolean {
+  const trimmed = value.trim()
+  if (!DATETIME_RE.test(trimmed) && !SLASH_DATE_RE.test(trimmed)) return false
+  return !Number.isNaN(Date.parse(trimmed))
+}
+
 /** Infer the column kind from its non-empty values. */
 export function inferKind(values: Cell[]): ColumnKind {
   let hasNumber = false
   let hasBoolean = false
+  let hasDatetime = false
   let hasString = false
   for (const v of values) {
     if (v === null) continue
     if (v === 'true' || v === 'false') {
       hasBoolean = true
+      continue
+    }
+    if (isDatetimeValue(v)) {
+      hasDatetime = true
       continue
     }
     if (v.length > 0 && Number.isFinite(Number(v))) {
@@ -211,10 +255,67 @@ export function inferKind(values: Cell[]): ColumnKind {
     hasString = true
   }
   if (hasString) return 'string'
-  if (hasNumber && hasBoolean) return 'string'
+  // A column mixing kinds (dates + numbers, numbers + booleans, …) is not one
+  // clean type; treat it as text rather than guess.
+  if ((hasNumber ? 1 : 0) + (hasBoolean ? 1 : 0) + (hasDatetime ? 1 : 0) > 1) return 'string'
   if (hasNumber) return 'number'
+  if (hasDatetime) return 'datetime'
   if (hasBoolean) return 'boolean'
   return 'string'
+}
+
+/**
+ * Linear-interpolation percentile of a sorted array (numpy's default).
+ * @param sorted - ascending values, non-empty.
+ * @param q - quantile in [0, 1].
+ * @returns the interpolated value.
+ */
+function percentile(sorted: number[], q: number): number {
+  const pos = q * (sorted.length - 1)
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  // The array is non-empty, so both indices are defined; the checks only
+  // satisfy noUncheckedIndexedAccess.
+  /* v8 ignore next -- a non-empty array guarantees defined indices */
+  if (lo === hi) return sorted[lo] ?? NaN
+  /* v8 ignore next -- same guarantee */
+  return (sorted[lo] ?? NaN) + (pos - lo) * ((sorted[hi] ?? NaN) - (sorted[lo] ?? NaN))
+}
+
+/**
+ * Distribution statistics over the numeric subset of a column's cells.
+ * Non-numeric and missing cells are skipped. `undefined` when nothing
+ * numeric remains.
+ * @param values - the column cells.
+ * @returns the statistics, or undefined for an all-missing/all-text column.
+ */
+export function numericStats(values: Cell[]): NumericStats | undefined {
+  const nums: number[] = []
+  for (const v of values) {
+    if (v === null) continue
+    const n = Number(v)
+    if (Number.isFinite(n)) nums.push(n)
+  }
+  if (nums.length === 0) return undefined
+  nums.sort((a, b) => a - b)
+  const min = nums[0] ?? NaN
+  const max = nums[nums.length - 1] ?? NaN
+  const mean = nums.reduce((a, b) => a + b, 0) / nums.length
+  let std: number | null = null
+  if (nums.length >= 2) {
+    const variance = nums.reduce((acc, x) => acc + (x - mean) ** 2, 0) / (nums.length - 1)
+    std = Math.sqrt(variance)
+  }
+  return {
+    n: nums.length,
+    min,
+    max,
+    mean,
+    std,
+    p25: percentile(nums, 0.25),
+    p50: percentile(nums, 0.5),
+    p75: percentile(nums, 0.75),
+  }
 }
 
 /**
@@ -240,7 +341,7 @@ export function profileColumn(name: string, values: Cell[], maxSample: number): 
       if (sample.length < maxSample) sample.push(v)
     }
   }
-  return {
+  const base = {
     name,
     kind,
     missing,
@@ -248,6 +349,11 @@ export function profileColumn(name: string, values: Cell[], maxSample: number): 
     unique: seen.size,
     sample,
   }
+  if (kind === 'number') {
+    const stats = numericStats(values)
+    if (stats !== undefined) return { ...base, stats }
+  }
+  return base
 }
 
 /**

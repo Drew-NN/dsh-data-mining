@@ -22,11 +22,23 @@
 - [x] 超过 maxRows 的文件：`sampled: true`，保留行 = 前一半 + 等距，已知总行数正确
 - [x] 全部 36 个测试通过（12 解析 + 24 工具），构建通过
 
-## M0.2 真实统计（待 M0.1 完成后细化）
+## M0.2 真实统计
 
-- 数值列 min/max/mean/std/四分位数，对拍测试（已知数据手算比对）
-- kind 推断加 `datetime`
-- 对拍测试
+**目标**：让 `profile_dataset` 对数值列给出可信的分布统计，对时间列给出正确的类型判断——模型第一次看数据就带着"哪里有异常"的信号。
+
+**改动点**：
+
+1. **数值列统计**：kind 为 `number` 的列增加 `stats` 字段：`n`（参与统计的非缺失值个数）、`min`/`max`/`mean`、`std`（样本标准差 ddof=1，n<2 时为 null）、`p25`/`p50`/`p75`（线性插值分位数，与 numpy/pandas 默认一致）。统计在**已读入的（可能已采样的）行**上计算，`sampled`/`truncated` 标记继续说明近似性。
+2. **datetime 类型**：`ColumnKind` 增加 `datetime`。识别 ISO 日期（`2024-01-01`、带时间、`T`/空格分隔、`Z`/时区偏移）和 `YYYY/MM/DD`；正则匹配 + `Date.parse` 验证。裸年份（`2024`）仍是 `number`；日期与数值/布尔混列归 `string`。
+3. **schema 与渲染**：`profile_dataset` 的列 schema 加 `stats`（仅 number 列出现）、kind 枚举加 `datetime`；渲染文本加统计摘要。
+
+**对拍**：统计用已知小数据集手算断言（`toBeCloseTo`），不与被测函数同源计算。
+
+**验收**（M0.2 已完成，2025-08-25）：
+- [x] 数值列 stats 与手算一致（含 n=1 时 std=null、偶数样本中位数插值）
+- [x] datetime 识别正确：ISO/带时间/斜杠 → datetime；裸年份 → number；混列 → string
+- [x] 非数值列无 stats 字段
+- [x] 全部 48 个测试通过（11 profile + 12 parsing + 25 tool），构建通过
 
 ## M0.3 工具面（待 M0.2 完成后细化）
 
