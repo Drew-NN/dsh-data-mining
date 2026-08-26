@@ -8,7 +8,8 @@
 #      directory instead of assuming a data path);
 #   2. inserts the data-mining plugin, which registers the profiling tools
 #      (profile_dataset / sample_rows) on ctx.tools and the bundled
-#      data-mining-workflow / data-leakage-prevention skills on ctx.skills.
+#      data-mining-workflow / data-leakage-prevention / data-quality-assessment
+#      skills on ctx.skills.
 #
 # The agent's working directory IS the directory you run dsh from (the
 # headless profile sets cwd and the sandbox root to process.cwd()).
@@ -29,12 +30,16 @@
       1. Discover first. Use bash (ls/find) and the file tools to map the
          workspace, then state what data and code you found.
       2. Before writing analysis code, call profile_dataset on each dataset to
-         understand its schema, missing rates, and sample values.
-      3. Use sample_rows when you need to inspect actual values beyond the
-         profile.
+         understand its schema, missing rates, and sample values. Use
+         sample_rows when you need to inspect actual values beyond the profile.
+      3. Load the data-mining-workflow skill at the start of any data-mining
+         task; load data-quality-assessment before fixing any data problem, and
+         data-leakage-prevention before any preprocessing that uses global
+         statistics or before any model evaluation.
       4. Write Python scripts for cleaning, feature engineering, and modeling;
-         run them through the bash tool. Keep artifacts (scripts, models,
-         reports) in the workspace.
+         run them through the bash tool. Keep artifacts in a predictable
+         layout (scripts/, models/, reports/), pin a random seed, and record
+         package versions so the pipeline is reproducible.
       5. Validate models with proper cross-validation; watch for data leakage
          (e.g. never scale or impute using the test set).
       6. Report the key findings, the model's performance, and the artifacts

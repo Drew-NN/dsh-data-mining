@@ -20,7 +20,7 @@ import {
   type SkillProvider,
 } from '@deepseek-ai/dsh-skill'
 
-import { buildProfile, parseCsv, readCsvFile } from './profile.ts'
+import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile } from './profile.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
@@ -53,6 +53,11 @@ const SKILLS: BundledSkill[] = [
     name: 'data-leakage-prevention',
     description: 'Use before training or evaluating any model on tabular data, and whenever you are about to impute, scale, encode, or split a dataset, to apply the data-leakage rules that keep test-set information out of training. The most dangerous failure in data mining is a model that scores high but leaks — its metric is fake.',
     file: 'data-leakage-prevention/SKILL.md',
+  },
+  {
+    name: 'data-quality-assessment',
+    description: 'Use during data understanding and before any preprocessing, when a dataset has missing values, outliers, duplicates, or inconsistent types, to assess data quality systematically — missingness patterns, outlier detection, duplicate rows, and value-consistency checks — and record every quality problem before fixing anything.',
+    file: 'data-quality-assessment/SKILL.md',
   },
 ]
 
@@ -94,10 +99,12 @@ const skillProvider: SkillProvider = {
 export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'profile_dataset',
-    description: 'Profile a CSV file: returns the row count, column count, file size in bytes, and one entry per column with its inferred kind (number/boolean/string), missing count and rate, distinct-value count, and up to 5 distinct sample values. Use this to understand a dataset before writing any analysis code.',
+    description: 'Profile a CSV file: returns the row count, column count, file size in bytes, and one entry per column with its inferred kind (number/boolean/string), missing count and rate, distinct-value count, and up to 5 distinct sample values. Use this to understand a dataset before writing any analysis code. Large files are sampled: `maxRows` caps the rows profiled (head plus every k-th row) and `maxBytes` caps the bytes read; the result reports `rowsProfiled`/`sampled`/`truncated` so the model knows the profile may be approximate.',
     parameters: {
       path: { type: 'string', required: true, description: 'Absolute path to the CSV file.' },
       maxSample: { type: 'integer', description: 'How many distinct sample values to return per column. Defaults to 5.' },
+      maxRows: { type: 'integer', description: 'Maximum rows to profile; larger files are sampled head + every k-th row. Defaults to 100000.' },
+      maxBytes: { type: 'integer', description: 'Maximum bytes to read; larger files are truncated (the profile covers only the head). Defaults to 67108864 (64 MiB).' },
     },
     output: {
       schema: {
@@ -108,6 +115,9 @@ export function apply(ctx: Context): void {
           rowCount: { type: 'integer', required: true },
           columnCount: { type: 'integer', required: true },
           bytes: { type: 'integer', required: true },
+          rowsProfiled: { type: 'integer', required: true },
+          sampled: { type: 'boolean', required: true },
+          truncated: { type: 'boolean', required: true },
           columns: {
             type: 'array',
             required: true,
@@ -128,7 +138,10 @@ export function apply(ctx: Context): void {
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `${value.path}: ${value.rowCount} rows × ${value.columnCount} columns (${value.bytes} bytes). `
+        text: `${value.path}: ${value.rowCount} rows × ${value.columnCount} columns (${value.bytes} bytes)`
+          + (value.sampled ? `, profiled ${value.rowsProfiled} sampled rows` : '')
+          + (value.truncated ? ', truncated at byte cap' : '')
+          + '. '
           + value.columns.map(c =>
             `${c.name}[${c.kind}] missing=${c.missing}(${(c.missingRate * 100).toFixed(1)}%) unique=${c.unique} sample=${c.sample.join('|')}`,
           ).join('; '),
@@ -137,18 +150,22 @@ export function apply(ctx: Context): void {
     async execute(args, exec) {
       if (!args.path) throw new Error('profile_dataset: `path` must be a non-empty string')
       const maxSample = args.maxSample === undefined ? 5 : Math.max(1, Math.min(20, args.maxSample))
-      const { text, bytes } = await readCsvFile(args.path, exec.signal)
-      return buildProfile(parseCsv(text), args.path, bytes, maxSample)
+      const maxRows = args.maxRows === undefined ? 100_000 : Math.max(1, Math.min(1_000_000, args.maxRows))
+      const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
+      const { text, bytes, truncated } = await readCsvFile(args.path, exec.signal, { maxBytes })
+      const profile = buildProfile(parseCsv(text, { maxRows }), args.path, bytes, maxSample)
+      return { ...profile, truncated }
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'sample_rows',
-    description: 'Return up to `limit` rows of a CSV file starting at `offset` (0-based, excluding the header). Each row is an object keyed by column name with string or null values. Use this to inspect actual data values after profiling.',
+    description: 'Return up to `limit` rows of a CSV file starting at `offset` (0-based, excluding the header). Each row is an object keyed by column name with string or null values. Use this to inspect actual data values after profiling. Files larger than `maxBytes` (default 64 MiB) are rejected rather than silently truncated, because offset semantics need the whole file; profile a sample or use Python for big files.',
     parameters: {
       path: { type: 'string', required: true, description: 'Absolute path to the CSV file.' },
       offset: { type: 'integer', description: 'Row index to start from (0-based, header excluded). Defaults to 0.' },
       limit: { type: 'integer', description: 'Maximum number of rows to return. Defaults to 10, capped at 100.' },
+      maxBytes: { type: 'integer', description: 'Maximum bytes to read. Defaults to 67108864 (64 MiB); larger files fail.' },
     },
     output: {
       schema: {
@@ -175,7 +192,11 @@ export function apply(ctx: Context): void {
       if (!args.path) throw new Error('sample_rows: `path` must be a non-empty string')
       const offset = args.offset === undefined ? 0 : Math.max(0, args.offset)
       const limit = args.limit === undefined ? 10 : Math.max(1, Math.min(100, args.limit))
-      const { text } = await readCsvFile(args.path, exec.signal)
+      const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
+      const { text, truncated } = await readCsvFile(args.path, exec.signal, { maxBytes })
+      if (truncated) {
+        throw new Error(`sample_rows: file exceeds the ${maxBytes}-byte read cap; offset semantics need the whole file. Use profile_dataset on a sample, or read the file with Python via bash.`)
+      }
       const table = parseCsv(text)
       const rows: Record<string, string | null>[] = []
       for (let i = offset; i < table.rows.length && rows.length < limit; i++) {
@@ -188,7 +209,7 @@ export function apply(ctx: Context): void {
         table.headers.forEach((h, c) => { row[h] = source[c] ?? null })
         rows.push(row)
       }
-      return { path: args.path, offset, rows, totalRows: table.rows.length }
+      return { path: args.path, offset, rows, totalRows: table.totalDataLines }
     },
   }))
 

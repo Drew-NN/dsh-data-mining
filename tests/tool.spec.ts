@@ -121,7 +121,7 @@ describe('profile_dataset tool', () => {
     const schema = ctx.tools.schemas().find(s => s.name === 'profile_dataset')
     expect(schema).toBeDefined()
     const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    expect(Object.keys(props)).toEqual(['path', 'maxSample'])
+    expect(Object.keys(props)).toEqual(['path', 'maxSample', 'maxRows', 'maxBytes'])
   })
 
   it('returns schema, missing rates, and sample values for a real CSV file', async () => {
@@ -135,6 +135,9 @@ describe('profile_dataset tool', () => {
       rowCount: 3,
       columnCount: 3,
       bytes: Buffer.byteLength('name,age,score\nalice,30,0.9\nbob,,0.7\ncarol,25,\n'),
+      rowsProfiled: 3,
+      sampled: false,
+      truncated: false,
       columns: [
         { name: 'name', kind: 'string', missing: 0, missingRate: 0, unique: 3, sample: ['alice', 'bob', 'carol'] },
         { name: 'age', kind: 'number', missing: 1, missingRate: 1 / 3, unique: 2, sample: ['30', '25'] },
@@ -172,6 +175,35 @@ describe('profile_dataset tool', () => {
     const ctx = await setup()
     const result = await callTool(ctx, 'profile_dataset', { path: '' })
     expect(result.isError).toBe(true)
+  })
+
+  it('reports sampling when maxRows is exceeded', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('v\n1\n2\n3\n4\n5\n')
+    const result = await callTool(ctx, 'profile_dataset', { path, maxRows: 3 })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as {
+      rowCount: number
+      rowsProfiled: number
+      sampled: boolean
+      truncated: boolean
+    }
+    expect(value.rowCount).toBe(5)
+    expect(value.rowsProfiled).toBe(3)
+    expect(value.sampled).toBe(true)
+    expect(value.truncated).toBe(false)
+  })
+
+  it('marks the profile as truncated when the byte cap is hit', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('a,b\n1,2\n3,4\n')
+    const result = await callTool(ctx, 'profile_dataset', { path, maxBytes: 8 })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as { truncated: boolean; rowCount: number }
+    expect(value.truncated).toBe(true)
+    expect(value.rowCount).toBe(1) // only the head line fit inside the cap
   })
 })
 
@@ -213,15 +245,23 @@ describe('sample_rows tool', () => {
     const result = await callTool(ctx, 'sample_rows', { path: '' })
     expect(result.isError).toBe(true)
   })
+
+  it('fails loud when the file exceeds maxBytes', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('v\n' + Array.from({ length: 100 }, (_, i) => String(i)).join('\n') + '\n')
+    const result = await callTool(ctx, 'sample_rows', { path, maxBytes: 16 })
+    expect(result.isError).toBe(true)
+  })
 })
 
 describe('bundled skills', () => {
-  it('registers the two data-mining skills on ctx.skills', async () => {
+  it('registers the three data-mining skills on ctx.skills', async () => {
     const ctx = await setup()
     const snapshot = await ctx.skills.snapshot()
     const names = snapshot.skills.map(s => s.name)
     expect(names).toContain('data-mining-workflow')
     expect(names).toContain('data-leakage-prevention')
+    expect(names).toContain('data-quality-assessment')
   })
 
   it('loads a bundled skill body', async () => {
@@ -229,5 +269,13 @@ describe('bundled skills', () => {
     const skill = await ctx.skills.get('data-mining-workflow')
     expect(skill).toBeDefined()
     expect(skill?.content).toContain('CRISP-DM')
+  })
+
+  it('loads the data-quality-assessment skill body', async () => {
+    const ctx = await setup()
+    const skill = await ctx.skills.get('data-quality-assessment')
+    expect(skill).toBeDefined()
+    expect(skill?.content).toContain('missingness')
+    expect(skill?.content).toContain('outliers')
   })
 })

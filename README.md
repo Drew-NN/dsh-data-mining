@@ -10,7 +10,7 @@ Installing this bundle adds three things to your profile:
 |---|---|
 | **Data-scientist persona** | Replaces the profile persona: discover the workspace first, profile before coding, validate without leakage, report findings |
 | **Data tools** (`profile_dataset`, `sample_rows`) | Give the model a proxy view of datasets that cannot fit in its context window (schema, missing rates, sample values) |
-| **Domain skills** (`data-mining-workflow`, `data-leakage-prevention`) | CRISP-DM workflow discipline and the leakage rules that keep test information out of training — loaded on demand |
+| **Domain skills** (`data-mining-workflow`, `data-leakage-prevention`, `data-quality-assessment`) | CRISP-DM workflow discipline, the leakage rules that keep test information out of training, and a systematic data-quality assessment checklist — loaded on demand |
 
 Everything is one package: the tools and skills are registered by the same plugin, and the persona lives in the bundle's patch layer.
 
@@ -50,14 +50,14 @@ dsh --profile headless --dump-config | grep -A2 "data-mining"
 - `cordis.patch.yml` — the bundle's patch layer: replaces the base `system-prompt` persona and inserts the `data-mining` plugin row.
 - `src/index.ts` — a Cordis plugin that registers `profile_dataset` / `sample_rows` on `ctx.tools` and the bundled skills on `ctx.skills` as a bundled provider (locating the `SKILL.md` files relative to the installed bundle directory).
 - `src/profile.ts` — the CSV parsing and profiling logic (pure functions, unit-tested).
-- `skills/` — the two skill bodies.
+- `skills/` — the three skill bodies.
 
 ## Development
 
 ```sh
 pnpm install
 pnpm run build     # tsc → lib/
-pnpm test          # vitest (20 tests)
+pnpm test          # vitest (21 tests)
 ```
 
 To test the bundle end to end in an isolated profile:
