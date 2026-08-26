@@ -20,7 +20,7 @@ import {
   type SkillProvider,
 } from '@deepseek-ai/dsh-skill'
 
-import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, valueCounts } from './profile.ts'
+import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, selectRows, valueCounts, type RowSelection } from './profile.ts'
 import { discoverDataFiles } from './discover.ts'
 
 /** Cordis plugin name. */
@@ -178,11 +178,20 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'sample_rows',
-    description: 'Return up to `limit` rows of a CSV file starting at `offset` (0-based, excluding the header). Each row is an object keyed by column name with string or null values. Use this to inspect actual data values after profiling. Files larger than `maxBytes` (default 64 MiB) are rejected rather than silently truncated, because offset semantics need the whole file; profile a sample or use Python for big files.',
+    description: 'Return up to `limit` rows of a CSV file starting at `offset` (0-based, excluding the header). `columns` projects a subset of columns in order; `where` filters rows by exact match on one column (offset/limit then apply to the matches, and `totalMatches` reports the full match count so the model can page through them). Each row is an object keyed by column name with string or null values. Use this to inspect actual data values after profiling. Files larger than `maxBytes` (default 64 MiB) are rejected rather than silently truncated, because offset and total-match semantics need the whole file; profile a sample or use Python for big files.',
     parameters: {
       path: { type: 'string', required: true, description: 'Absolute path to the CSV file.' },
-      offset: { type: 'integer', description: 'Row index to start from (0-based, header excluded). Defaults to 0.' },
+      offset: { type: 'integer', description: 'Index into the (filtered) rows to start from. Defaults to 0.' },
       limit: { type: 'integer', description: 'Maximum number of rows to return. Defaults to 10, capped at 100.' },
+      columns: { type: 'array', items: { type: 'string' }, description: 'Column names to include, in output order. Defaults to all columns.' },
+      where: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          column: { type: 'string', required: true, description: 'Column to filter on.' },
+          equals: { type: 'string', required: true, description: 'Exact value to match; null cells never match.' },
+        },
+      },
       maxBytes: { type: 'integer', description: 'Maximum bytes to read. Defaults to 67108864 (64 MiB); larger files fail.' },
     },
     output: {
@@ -192,17 +201,18 @@ export function apply(ctx: Context): void {
         properties: {
           path: { type: 'string', required: true },
           offset: { type: 'integer', required: true },
+          columns: { type: 'array', required: true, items: { type: 'string' } },
           rows: {
             type: 'array',
             required: true,
             items: { type: 'object', additionalProperties: true },
           },
-          totalRows: { type: 'integer', required: true },
+          totalMatches: { type: 'integer', required: true },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `${value.rows.length} rows from offset ${value.offset} of ${value.totalRows}: `
+        text: `${value.rows.length} rows from offset ${value.offset} of ${value.totalMatches} matches: `
           + JSON.stringify(value.rows),
       }],
     },
@@ -213,21 +223,20 @@ export function apply(ctx: Context): void {
       const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
       const { text, truncated } = await readCsvFile(args.path, exec.signal, { maxBytes })
       if (truncated) {
-        throw new Error(`sample_rows: file exceeds the ${maxBytes}-byte read cap; offset semantics need the whole file. Use profile_dataset on a sample, or read the file with Python via bash.`)
+        throw new Error(`sample_rows: file exceeds the ${maxBytes}-byte read cap; offset/total-match semantics need the whole file. Use profile_dataset on a sample, or read the file with Python via bash.`)
       }
       const table = parseCsv(text)
-      const rows: Record<string, string | null>[] = []
-      for (let i = offset; i < table.rows.length && rows.length < limit; i++) {
-        const row: Record<string, string | null> = {}
-        const source = table.rows[i]
-        // The loop bound guarantees a defined row; the check only satisfies
-        // noUncheckedIndexedAccess.
-        /* v8 ignore next -- i < rows.length guarantees a defined row */
-        if (source === undefined) continue
-        table.headers.forEach((h, c) => { row[h] = source[c] ?? null })
-        rows.push(row)
+      const selection: RowSelection = {}
+      if (args.columns !== undefined) selection.columns = args.columns
+      if (args.where !== undefined && args.where !== null) selection.where = args.where
+      const { rows, totalMatches } = selectRows(table, selection, offset, limit)
+      return {
+        path: args.path,
+        offset,
+        columns: selection.columns ?? table.headers,
+        rows,
+        totalMatches,
       }
-      return { path: args.path, offset, rows, totalRows: table.totalDataLines }
     },
   }))
 

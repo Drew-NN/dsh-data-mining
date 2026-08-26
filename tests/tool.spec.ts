@@ -265,7 +265,8 @@ describe('sample_rows tool', () => {
     expect(result.value).toEqual({
       path,
       offset: 0,
-      totalRows: 3,
+      columns: ['name', 'age'],
+      totalMatches: 3,
       rows: [
         { name: 'alice', age: '30' },
         { name: 'bob', age: null },
@@ -283,9 +284,57 @@ describe('sample_rows tool', () => {
     expect(result.value).toEqual({
       path,
       offset: 1,
-      totalRows: 5,
+      columns: ['v'],
+      totalMatches: 5,
       rows: [{ v: '2' }, { v: '3' }],
     })
+  })
+
+  it('projects only the requested columns in order', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('a,b,c\n1,2,3\n4,5,6\n')
+    const result = await callTool(ctx, 'sample_rows', { path, columns: ['c', 'a'] })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    expect(result.value).toEqual({
+      path,
+      offset: 0,
+      columns: ['c', 'a'],
+      totalMatches: 2,
+      rows: [{ c: '3', a: '1' }, { c: '6', a: '4' }],
+    })
+  })
+
+  it('rejects unknown columns', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('a,b\n1,2\n')
+    const result = await callTool(ctx, 'sample_rows', { path, columns: ['nope'] })
+    expect(result.isError).toBe(true)
+  })
+
+  it('filters by where with offset/limit applied to matches', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('plan,amount\nbasic,1\npremium,2\nbasic,3\npremium,4\nbasic,5\n')
+    const result = await callTool(ctx, 'sample_rows', { path, where: { column: 'plan', equals: 'basic' } })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as { totalMatches: number; rows: Array<{ plan: string; amount: string }> }
+    expect(value.totalMatches).toBe(3)
+    expect(value.rows).toEqual([{ plan: 'basic', amount: '1' }, { plan: 'basic', amount: '3' }, { plan: 'basic', amount: '5' }])
+
+    const paged = await callTool(ctx, 'sample_rows', { path, where: { column: 'plan', equals: 'basic' }, offset: 1, limit: 1 })
+    expect((paged.value as { totalMatches: number; rows: unknown[] }).totalMatches).toBe(3)
+    expect((paged.value as { rows: Array<{ plan: string; amount: string }> }).rows).toEqual([{ plan: 'basic', amount: '3' }])
+  })
+
+  it('never matches a where value against a null cell', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('age,note\n,empty\n30,ok\n')
+    const result = await callTool(ctx, 'sample_rows', { path, where: { column: 'age', equals: '' } })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    expect((result.value as { totalMatches: number; rows: unknown[] }).totalMatches).toBe(0)
+    expect((result.value as { rows: unknown[] }).rows).toEqual([])
   })
 
   it('rejects an empty path', async () => {

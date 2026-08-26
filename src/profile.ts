@@ -446,6 +446,68 @@ export function valueCounts(table: Table, columnIndex: number, topK: number): Va
   }
 }
 
+/** Row projection and filtering options for {@link selectRows}. */
+export interface RowSelection {
+  /** Column names to include, in output order; defaults to all headers. */
+  columns?: string[]
+  /** Exact-match filter on one column; `null` cells never match. */
+  where?: { column: string; equals: string }
+}
+
+/** The `sample_rows` per-call result, before read-level fields. */
+export interface SelectRowsResult {
+  rows: Record<string, string | null>[]
+  /** Matched rows counted over the whole table, ignoring offset/limit. */
+  totalMatches: number
+}
+
+/**
+ * Project and filter rows of a parsed table: optional column subset (in the
+ * requested order), optional exact-match `where` filter (applied first, with
+ * `offset`/`limit` slicing the matches), and a total-match count so the model
+ * can page through matches. Unknown column names fail with the header list.
+ * @param table - the parsed table.
+ * @param selection - columns/where options.
+ * @param offset - index into the matched rows.
+ * @param limit - max rows to return.
+ * @returns the projected rows and the total match count.
+ */
+export function selectRows(table: Table, selection: RowSelection, offset: number, limit: number): SelectRowsResult {
+  const include = selection.columns ?? table.headers
+  for (const h of include) {
+    if (!table.headers.includes(h)) {
+      throw new Error(`sample_rows: column "${h}" not found. Available columns: ${table.headers.join(', ')}`)
+    }
+  }
+  const whereColumn = selection.where?.column
+  if (whereColumn !== undefined && !table.headers.includes(whereColumn)) {
+    throw new Error(`sample_rows: where.column "${whereColumn}" not found. Available columns: ${table.headers.join(', ')}`)
+  }
+  const includeIdx = include.map(h => table.headers.indexOf(h))
+  const whereIdx = whereColumn === undefined ? -1 : table.headers.indexOf(whereColumn)
+  const rows: Record<string, string | null>[] = []
+  let totalMatches = 0
+  for (const source of table.rows) {
+    if (whereIdx !== -1) {
+      const cell = source[whereIdx] ?? null
+      // `null` never matches, even when `equals` is an empty string.
+      if (cell === null || cell !== selection.where!.equals) continue
+    }
+    if (totalMatches >= offset && rows.length < limit) {
+      const row: Record<string, string | null> = {}
+      include.forEach((h, i) => {
+        // includeIdx[i] is a valid header index (validated above); the guard
+        // only satisfies noUncheckedIndexedAccess.
+        /* v8 ignore next -- i is within includeIdx's bounds */
+        row[h] = source[includeIdx[i]!] ?? null
+      })
+      rows.push(row)
+    }
+    totalMatches++
+  }
+  return { rows, totalMatches }
+}
+
 /** Options for {@link readCsvFile}. */
 export interface ReadCsvOptions {
   /**
