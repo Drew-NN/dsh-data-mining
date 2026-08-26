@@ -21,6 +21,7 @@ import {
 } from '@deepseek-ai/dsh-skill'
 
 import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, valueCounts } from './profile.ts'
+import { discoverDataFiles } from './discover.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
@@ -292,6 +293,59 @@ export function apply(ctx: Context): void {
       }
       const counts = valueCounts(table, index, topK)
       return { path: args.path, column: args.column, ...counts, sampled: table.sampled, truncated }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'discover_datasets',
+    description: 'Scan a directory tree for data files (csv, tsv, json, jsonl, parquet, xlsx, xls): each file with its size, detected format, sniffed delimiter for CSV/TSV, and an estimated row count (exact for small files, extrapolated from a 64 KiB head — flagged `estimated`). Use this first to map a workspace instead of guessing with ls/cat.',
+    parameters: {
+      dir: { type: 'string', description: 'Directory to scan. Defaults to the current working directory.' },
+      maxDepth: { type: 'integer', description: 'Maximum directory depth to descend into. Defaults to 3.' },
+      maxFiles: { type: 'integer', description: 'Maximum number of files to report. Defaults to 200, capped at 2000.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          root: { type: 'string', required: true },
+          fileCount: { type: 'integer', required: true },
+          truncated: { type: 'boolean', required: true },
+          files: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                ext: { type: 'string', required: true },
+                kind: { type: 'string', required: true, enum: ['csv', 'json', 'parquet', 'excel'] },
+                bytes: { type: 'integer', required: true },
+                delimiter: { type: 'string' },
+                rowEstimate: { type: 'integer' },
+                estimated: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `${value.root}: ${value.fileCount} data files${value.truncated ? ' (truncated at file cap)' : ''}. `
+          + value.files.map(f => {
+            const delim = f.delimiter === undefined ? '' : `, ${f.delimiter === '\t' ? 'tab' : f.delimiter}-delimited`
+            const rows = f.rowEstimate === undefined ? '' : `, ~${f.rowEstimate} rows${f.estimated ? ' (estimated)' : ''}`
+            return `${f.path} (${f.kind}${delim}${rows}, ${f.bytes} bytes)`
+          }).join('; '),
+      }],
+    },
+    async execute(args, exec) {
+      const dir = args.dir === undefined ? process.cwd() : args.dir
+      const maxDepth = args.maxDepth === undefined ? 3 : Math.max(1, Math.min(10, args.maxDepth))
+      const maxFiles = args.maxFiles === undefined ? 200 : Math.max(1, Math.min(2000, args.maxFiles))
+      return discoverDataFiles(dir, { maxDepth, maxFiles, signal: exec.signal })
     },
   }))
 

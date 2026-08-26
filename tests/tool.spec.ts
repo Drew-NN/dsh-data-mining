@@ -350,6 +350,40 @@ describe('value_counts tool', () => {
   })
 })
 
+describe('discover_datasets tool', () => {
+  it('registers the tool with the expected schema', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(s => s.name === 'discover_datasets')
+    expect(schema).toBeDefined()
+    const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props)).toEqual(['dir', 'maxDepth', 'maxFiles'])
+  })
+
+  it('lists data files in a directory with sizes and delimiters', async () => {
+    const ctx = await setup()
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-tool-discover-'))
+    tempDirs.push(dir)
+    await writeFile(join(dir, 'a.csv'), 'x,y\n1,2\n')
+    await writeFile(join(dir, 'b.tsv'), 'x\ty\n1\t2\n')
+    const result = await callTool(ctx, 'discover_datasets', { dir })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as {
+      root: string
+      fileCount: number
+      truncated: boolean
+      files: Array<{ path: string; kind: string; delimiter?: string; rowEstimate?: number; estimated?: boolean }>
+    }
+    expect(value.root).toBe(dir)
+    expect(value.fileCount).toBe(2)
+    expect(value.truncated).toBe(false)
+    expect(value.files.map(f => f.path)).toEqual([join(dir, 'a.csv'), join(dir, 'b.tsv')])
+    expect(value.files[0]!.delimiter).toBe(',')
+    expect(value.files[1]!.delimiter).toBe('\t')
+    expect(value.files[0]!.rowEstimate).toBe(1)
+  })
+})
+
 describe('bundled skills', () => {
   it('registers the three data-mining skills on ctx.skills', async () => {
     const ctx = await setup()
