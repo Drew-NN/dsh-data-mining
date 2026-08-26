@@ -11,6 +11,7 @@
 
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
@@ -22,6 +23,7 @@ import {
 
 import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, selectRows, valueCounts, type RowSelection } from './profile.ts'
 import { discoverDataFiles } from './discover.ts'
+import { splitDatasetFile, type SplitStrategy } from './split.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
@@ -355,6 +357,85 @@ export function apply(ctx: Context): void {
       const maxDepth = args.maxDepth === undefined ? 3 : Math.max(1, Math.min(10, args.maxDepth))
       const maxFiles = args.maxFiles === undefined ? 200 : Math.max(1, Math.min(2000, args.maxFiles))
       return discoverDataFiles(dir, { maxDepth, maxFiles, signal: exec.signal })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'split_dataset',
+    description: 'Split a CSV into train/test with a deterministic, documented strategy and write the split metadata (strategy, seed, ratio, counts, file paths) to disk. Call this BEFORE any preprocessing that learns from data (imputation, scaling, encoding) — every statistic must be fit on the train side only. Strategies: random (optional `stratifyColumn`), chronological by a time column (with optional `gapDays`), or group by an entity column (entities never cross the split). Outputs `train.csv`, `test.csv`, and `split.json` under `<outDir>` (default `<cwd>/dsh_manifest/splits/<name>`); `check_leakage` later verifies the split. Whole-file read: files over `maxBytes` fail rather than split a partial file.',
+    parameters: {
+      path: { type: 'string', required: true, description: 'Absolute path to the CSV file to split.' },
+      name: { type: 'string', required: true, description: 'Split name; used for the output directory and metadata.' },
+      strategy: { type: 'string', required: true, enum: ['random', 'chronological', 'group'], description: 'How to split. chronological requires timeColumn; group requires groupColumn.' },
+      ratio: { type: 'number', description: 'Train share, 0.05–0.95. Defaults to 0.8.' },
+      seed: { type: 'integer', description: 'Seed for deterministic random/group parts. Defaults to 42.' },
+      stratifyColumn: { type: 'string', description: 'For random: keep the train share balanced within this column\'s values.' },
+      timeColumn: { type: 'string', description: 'For chronological: column with ISO/slash dates to order by.' },
+      gapDays: { type: 'number', description: 'For chronological: rows within this many days of the cutoff are dropped. Defaults to 0.' },
+      groupColumn: { type: 'string', description: 'For group: column whose values must never appear on both sides.' },
+      idColumn: { type: 'string', description: 'Optional entity key recorded in metadata for check_leakage overlap checks.' },
+      outDir: { type: 'string', description: 'Output directory for train.csv/test.csv/split.json. Defaults to <cwd>/dsh_manifest/splits/<name>.' },
+      maxBytes: { type: 'integer', description: 'Maximum bytes to read. Defaults to 67108864 (64 MiB); larger files fail.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          datasetPath: { type: 'string', required: true },
+          name: { type: 'string', required: true },
+          strategy: { type: 'string', required: true, enum: ['random', 'chronological', 'group'] },
+          ratio: { type: 'number', required: true },
+          seed: { type: 'integer', required: true },
+          totalRows: { type: 'integer', required: true },
+          trainRows: { type: 'integer', required: true },
+          testRows: { type: 'integer', required: true },
+          droppedRows: { type: 'integer', required: true },
+          trainFile: { type: 'string', required: true },
+          testFile: { type: 'string', required: true },
+          splitFile: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `${value.name} (${value.strategy}, ratio ${value.ratio}, seed ${value.seed}): ${value.trainRows}/${value.totalRows} train, ${value.testRows} test${value.droppedRows > 0 ? `, ${value.droppedRows} dropped` : ''}. `,
+      }],
+    },
+    async execute(args, exec) {
+      if (!args.path) throw new Error('split_dataset: `path` must be a non-empty string')
+      if (!args.name) throw new Error('split_dataset: `name` must be a non-empty string')
+      const strategy = args.strategy as SplitStrategy
+      const ratio = args.ratio === undefined ? 0.8 : Math.min(0.95, Math.max(0.05, args.ratio))
+      const seed = args.seed === undefined ? 42 : Math.max(0, Math.floor(args.seed))
+      const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
+      const outDir = args.outDir ?? join(process.cwd(), 'dsh_manifest', 'splits', args.name)
+      const { metadata, trainFile, testFile, splitFile } = await splitDatasetFile(args.path, exec.signal, {
+        strategy,
+        ratio,
+        seed,
+        name: args.name,
+        outDir,
+        maxBytes,
+        ...(args.stratifyColumn !== undefined ? { stratifyColumn: args.stratifyColumn } : {}),
+        ...(args.timeColumn !== undefined ? { timeColumn: args.timeColumn } : {}),
+        ...(args.gapDays !== undefined ? { gapDays: args.gapDays } : {}),
+        ...(args.groupColumn !== undefined ? { groupColumn: args.groupColumn } : {}),
+        ...(args.idColumn !== undefined ? { idColumn: args.idColumn } : {}),
+      })
+      return {
+        datasetPath: metadata.datasetPath,
+        name: metadata.name,
+        strategy: metadata.strategy,
+        ratio: metadata.ratio,
+        seed: metadata.seed,
+        totalRows: metadata.totalRows,
+        trainRows: metadata.trainRows,
+        testRows: metadata.testRows,
+        droppedRows: metadata.droppedRows,
+        trainFile,
+        testFile,
+        splitFile,
+      }
     },
   }))
 

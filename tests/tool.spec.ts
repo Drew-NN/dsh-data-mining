@@ -433,6 +433,77 @@ describe('discover_datasets tool', () => {
   })
 })
 
+describe('split_dataset tool', () => {
+  it('registers the tool with the expected schema', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(s => s.name === 'split_dataset')
+    expect(schema).toBeDefined()
+    const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props)).toEqual([
+      'path', 'name', 'strategy', 'ratio', 'seed', 'stratifyColumn', 'timeColumn',
+      'gapDays', 'groupColumn', 'idColumn', 'outDir', 'maxBytes',
+    ])
+  })
+
+  it('writes train/test/split.json and reports honest counts', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('id,v\na,1\nb,2\nc,3\nd,4\ne,5\nf,6\ng,7\nh,8\ni,9\nj,10\n')
+    const outDir = join(tmpdir(), `dsh-split-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    tempDirs.push(outDir)
+    const result = await callTool(ctx, 'split_dataset', { path, name: 's1', strategy: 'random', ratio: 0.8, seed: 1, idColumn: 'id', outDir })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as {
+      totalRows: number; trainRows: number; testRows: number; droppedRows: number
+      trainFile: string; testFile: string; splitFile: string; seed: number; strategy: string
+    }
+    expect(value.totalRows).toBe(10)
+    expect(value.trainRows).toBe(8)
+    expect(value.testRows).toBe(2)
+    expect(value.droppedRows).toBe(0)
+    expect(value.strategy).toBe('random')
+    expect(value.seed).toBe(1)
+
+    const { readFile } = await import('node:fs/promises')
+    const trainText = await readFile(value.trainFile, 'utf8')
+    const testText = await readFile(value.testFile, 'utf8')
+    const splitJson = JSON.parse(await readFile(value.splitFile, 'utf8'))
+    // 10 header+data rows each; no overlap between the two files
+    const trainLines = trainText.trim().split('\n')
+    const testLines = testText.trim().split('\n')
+    expect(trainLines.length).toBe(9) // header + 8
+    expect(testLines.length).toBe(3) // header + 2
+    const trainIds = new Set(trainLines.slice(1).map(l => l.split(',')[0]))
+    const testIds = new Set(testLines.slice(1).map(l => l.split(',')[0]))
+    for (const id of trainIds) expect(testIds.has(id)).toBe(false)
+    expect(splitJson.version).toBe(1)
+    expect(splitJson.trainRows).toBe(8)
+    expect(splitJson.testRows).toBe(2)
+  })
+
+  it('reproduces the same split for the same seed', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('v\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n')
+    const run = async (tag: string) => {
+      const outDir = join(tmpdir(), `dsh-split-re-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      tempDirs.push(outDir)
+      const result = await callTool(ctx, 'split_dataset', { path, name: tag, strategy: 'random', ratio: 0.5, seed: 5, outDir })
+      if (result.isError) throw new Error('expected success')
+      const { readFile } = await import('node:fs/promises')
+      const train = (await readFile((result.value as { trainFile: string }).trainFile, 'utf8')).trim()
+      return train
+    }
+    expect(await run('a')).toBe(await run('b'))
+  })
+
+  it('fails loud when a strategy-required column is missing', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('v\n1\n2\n3\n')
+    const result = await callTool(ctx, 'split_dataset', { path, name: 'bad', strategy: 'chronological', timeColumn: 'nope' })
+    expect(result.isError).toBe(true)
+  })
+})
+
 describe('bundled skills', () => {
   it('registers the three data-mining skills on ctx.skills', async () => {
     const ctx = await setup()
