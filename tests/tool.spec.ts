@@ -302,6 +302,54 @@ describe('sample_rows tool', () => {
   })
 })
 
+describe('value_counts tool', () => {
+  it('registers the tool with the expected schema', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(s => s.name === 'value_counts')
+    expect(schema).toBeDefined()
+    const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props)).toEqual(['path', 'column', 'topK', 'maxRows', 'maxBytes'])
+  })
+
+  it('returns counts and rates for a categorical column', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('plan,churned\npremium,no\nbasic,yes\npremium,no\nbasic,yes\nbasic,yes\n')
+    const result = await callTool(ctx, 'value_counts', { path, column: 'plan' })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    expect(result.value).toMatchObject({
+      column: 'plan',
+      kind: 'string',
+      total: 5,
+      missing: 0,
+      unique: 2,
+      omitted: 0,
+      sampled: false,
+      truncated: false,
+      values: [
+        { value: 'basic', count: 3, rate: 0.6 },
+        { value: 'premium', count: 2, rate: 0.4 },
+      ],
+    })
+  })
+
+  it('fails loud on an unknown column', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('plan,churned\npremium,no\n')
+    const result = await callTool(ctx, 'value_counts', { path, column: 'nope' })
+    expect(result.isError).toBe(true)
+  })
+
+  it('marks counts as sampled when maxRows is exceeded', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('v\na\na\na\nb\nb\n')
+    const result = await callTool(ctx, 'value_counts', { path, column: 'v', maxRows: 2 })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    expect((result.value as { sampled: boolean }).sampled).toBe(true)
+  })
+})
+
 describe('bundled skills', () => {
   it('registers the three data-mining skills on ctx.skills', async () => {
     const ctx = await setup()

@@ -20,7 +20,7 @@ import {
   type SkillProvider,
 } from '@deepseek-ai/dsh-skill'
 
-import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile } from './profile.ts'
+import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, valueCounts } from './profile.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
@@ -227,6 +227,71 @@ export function apply(ctx: Context): void {
         rows.push(row)
       }
       return { path: args.path, offset, rows, totalRows: table.totalDataLines }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'value_counts',
+    description: 'Return the top-K value frequencies for one column of a CSV file: each value with its count and share of non-missing values, plus the column kind, total/missing/unique counts, and how many distinct values are not shown. Use this to judge distributions — target imbalance, whether a high-cardinality column is really an ID, or which categories dominate — before modeling.',
+    parameters: {
+      path: { type: 'string', required: true, description: 'Absolute path to the CSV file.' },
+      column: { type: 'string', required: true, description: 'Column name to tally. Fails if the name is not a header.' },
+      topK: { type: 'integer', description: 'How many top values to return. Defaults to 10, capped at 50.' },
+      maxRows: { type: 'integer', description: 'Maximum rows to read for the tally; larger files are sampled head + every k-th row. Defaults to 100000.' },
+      maxBytes: { type: 'integer', description: 'Maximum bytes to read; larger files are truncated (counts cover only the head). Defaults to 67108864 (64 MiB).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: { type: 'string', required: true },
+          column: { type: 'string', required: true },
+          kind: { type: 'string', required: true, enum: ['number', 'boolean', 'string', 'datetime'] },
+          total: { type: 'integer', required: true },
+          missing: { type: 'integer', required: true },
+          unique: { type: 'integer', required: true },
+          omitted: { type: 'integer', required: true },
+          sampled: { type: 'boolean', required: true },
+          truncated: { type: 'boolean', required: true },
+          values: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                value: { type: 'string', required: true },
+                count: { type: 'integer', required: true },
+                rate: { type: 'number', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `${value.path} column ${value.column}[${value.kind}]: ${value.total} values (${value.missing} missing), ${value.unique} distinct`
+          + (value.sampled ? ` (sampled)` : '')
+          + (value.truncated ? ' (truncated at byte cap)' : '')
+          + `. top: ${value.values.map(v => `${v.value}=${v.count}(${(v.rate * 100).toFixed(1)}%)`).join(', ')}`
+          + (value.omitted > 0 ? `; ${value.omitted} more not shown` : ''),
+      }],
+    },
+    async execute(args, exec) {
+      if (!args.path) throw new Error('value_counts: `path` must be a non-empty string')
+      if (!args.column) throw new Error('value_counts: `column` must be a non-empty string')
+      const topK = args.topK === undefined ? 10 : Math.max(1, Math.min(50, args.topK))
+      const maxRows = args.maxRows === undefined ? 100_000 : Math.max(1, Math.min(1_000_000, args.maxRows))
+      const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
+      const { text, truncated } = await readCsvFile(args.path, exec.signal, { maxBytes })
+      const table = parseCsv(text, { maxRows })
+      const index = table.headers.indexOf(args.column)
+      if (index === -1) {
+        throw new Error(`value_counts: column "${args.column}" not found. Available columns: ${table.headers.join(', ')}`)
+      }
+      const counts = valueCounts(table, index, topK)
+      return { path: args.path, column: args.column, ...counts, sampled: table.sampled, truncated }
     },
   }))
 

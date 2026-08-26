@@ -90,3 +90,43 @@ describe('column profile stats', () => {
     expect('stats' in date).toBe(false)
   })
 })
+
+describe('value counts', () => {
+  it('tallies counts and rates in descending order', () => {
+    const table = profile.parseCsv('plan\npremium\nbasic\npremium\npremium\n')
+    const vc = profile.valueCounts(table, 0, 10)
+    expect(vc.kind).toBe('string')
+    expect(vc.total).toBe(4)
+    expect(vc.missing).toBe(0)
+    expect(vc.unique).toBe(2)
+    expect(vc.omitted).toBe(0)
+    expect(vc.values).toEqual([
+      { value: 'premium', count: 3, rate: 0.75 },
+      { value: 'basic', count: 1, rate: 0.25 },
+    ])
+  })
+
+  it('counts missing separately and reports omitted categories past topK', () => {
+    const table = profile.parseCsv('a,b\n1,\n2,3\n3,3\n4,5\n')
+    const vc = profile.valueCounts(table, 1, 1)
+    expect(vc.missing).toBe(1)
+    expect(vc.total).toBe(3)
+    expect(vc.unique).toBe(2)
+    expect(vc.omitted).toBe(1)
+    expect(vc.values).toEqual([{ value: '3', count: 2, rate: 2 / 3 }])
+  })
+
+  it('breaks ties by value ascending', () => {
+    const table = profile.parseCsv('v\nb\na\nb\na\nc\n')
+    const vc = profile.valueCounts(table, 0, 10)
+    expect(vc.values.map(v => v.value)).toEqual(['a', 'b', 'c'])
+    expect(vc.values.map(v => v.count)).toEqual([2, 2, 1])
+  })
+
+  it('works on datetime columns', () => {
+    const table = profile.parseCsv('d\n2024-01-01\n2024-01-01\n2023-05-05\n')
+    const vc = profile.valueCounts(table, 0, 10)
+    expect(vc.kind).toBe('datetime')
+    expect(vc.values[0]).toEqual({ value: '2024-01-01', count: 2, rate: 2 / 3 })
+  })
+})

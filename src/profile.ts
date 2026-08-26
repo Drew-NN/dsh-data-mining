@@ -67,6 +67,27 @@ export interface SampleRows {
   totalRows: number
 }
 
+/** One top-frequency value with its count and share of non-missing values. */
+export interface ValueCount {
+  value: string
+  count: number
+  /** `count / total`, where total is the non-missing value count. */
+  rate: number
+}
+
+/** The `value_counts` per-column distribution, before read-level flags. */
+export interface ValueCounts {
+  kind: ColumnKind
+  /** Non-missing values in the rows read. */
+  total: number
+  missing: number
+  /** Distinct non-missing values in the rows read. */
+  unique: number
+  /** Distinct values not shown (unique − values.length). */
+  omitted: number
+  values: ValueCount[]
+}
+
 /** Delimiters considered by auto-detection, in preference order. */
 const DELIMITERS = [',', '\t', ';', '|'] as const
 /** How many lines auto-detection inspects. */
@@ -384,6 +405,44 @@ export function buildProfile(table: Table, path: string, bytes: number, maxSampl
     rowsProfiled: table.rows.length,
     sampled: table.sampled,
     columns,
+  }
+}
+
+/**
+ * Tally one column's value distribution: top frequencies with rates. Counts
+ * reflect the rows present in `table` (which may be a sample). Missing cells
+ * are counted separately and never appear in `values`.
+ * @param table - the parsed table.
+ * @param columnIndex - the column to tally.
+ * @param topK - how many top values to return.
+ * @returns the distribution.
+ */
+export function valueCounts(table: Table, columnIndex: number, topK: number): ValueCounts {
+  const cells = table.rows.map(row => row[columnIndex] ?? null)
+  const kind = inferKind(cells)
+  const tally = new Map<string, number>()
+  let missing = 0
+  for (const v of cells) {
+    if (v === null) {
+      missing++
+      continue
+    }
+    tally.set(v, (tally.get(v) ?? 0) + 1)
+  }
+  const total = cells.length - missing
+  const entries = [...tally.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  const values: ValueCount[] = entries.slice(0, topK).map(([value, count]) => ({
+    value,
+    count,
+    rate: total === 0 ? 0 : count / total,
+  }))
+  return {
+    kind,
+    total,
+    missing,
+    unique: tally.size,
+    omitted: Math.max(0, tally.size - values.length),
+    values,
   }
 }
 
