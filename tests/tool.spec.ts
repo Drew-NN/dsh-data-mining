@@ -504,6 +504,107 @@ describe('split_dataset tool', () => {
   })
 })
 
+async function doSplit(ctx: Context, path: string, name: string, strategy: string, extra: Record<string, unknown> = {}): Promise<string> {
+  const outDir = join(tmpdir(), `dsh-leak-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  tempDirs.push(outDir)
+  const result = await callTool(ctx, 'split_dataset', { path, name, strategy, outDir, ...extra })
+  if (result.isError) throw new Error(`split failed: ${JSON.stringify(result)}`)
+  return (result.value as { splitFile: string }).splitFile
+}
+
+describe('check_leakage tool', () => {
+  it('registers the tool with the expected schema', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(s => s.name === 'check_leakage')
+    expect(schema).toBeDefined()
+    const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props)).toEqual(['splitFile', 'maxBytes'])
+  })
+
+  it('passes a clean random split', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('id,v\na,1\nb,2\nc,3\nd,4\ne,5\nf,6\ng,7\nh,8\ni,9\nj,10\n')
+    const splitFile = await doSplit(ctx, path, 'clean', 'random', { ratio: 0.8, seed: 1, idColumn: 'id' })
+    const result = await callTool(ctx, 'check_leakage', { splitFile })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as { ok: boolean; checks: Array<{ name: string; passed: boolean }>; duplicateCount: number }
+    expect(value.ok).toBe(true)
+    expect(value.duplicateCount).toBe(0)
+    const names = value.checks.map(c => c.name)
+    expect(names).toContain('row-counts')
+    expect(names).toContain('duplicates')
+    expect(names).toContain('id-column')
+    expect(names).toContain('totals')
+  })
+
+  it('fails when a train row is duplicated into test', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('v\n1\n2\n3\n4\n5\n6\n')
+    const splitFile = await doSplit(ctx, path, 'dup', 'random', { ratio: 0.5, seed: 1 })
+    const { readFile, writeFile } = await import('node:fs/promises')
+    const { dirname } = await import('node:path')
+    const testFile = join(dirname(splitFile), 'test.csv')
+    const trainFile = join(dirname(splitFile), 'train.csv')
+    const trainText = await readFile(trainFile, 'utf8')
+    const trainLine = trainText.trim().split('\n')[1]! // first train data row
+    await writeFile(testFile, (await readFile(testFile, 'utf8')).trimEnd() + '\n' + trainLine + '\n')
+    const result = await callTool(ctx, 'check_leakage', { splitFile })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as { ok: boolean; duplicateCount: number; checks: Array<{ name: string; passed: boolean }> }
+    expect(value.ok).toBe(false)
+    expect(value.duplicateCount).toBe(1)
+    expect(value.checks.find(c => c.name === 'duplicates')!.passed).toBe(false)
+  })
+
+  it('fails a group split when an id crosses sides', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('id,group,v\n1,g1,a\n2,g1,b\n3,g2,c\n4,g2,d\n5,g3,e\n6,g3,f\n')
+    const splitFile = await doSplit(ctx, path, 'group', 'group', { ratio: 0.5, seed: 3, groupColumn: 'group', idColumn: 'id' })
+    const { readFile, writeFile } = await import('node:fs/promises')
+    const { dirname } = await import('node:path')
+    const trainFile = join(dirname(splitFile), 'train.csv')
+    const testFile = join(dirname(splitFile), 'test.csv')
+    const trainText = await readFile(trainFile, 'utf8')
+    const trainRow = trainText.trim().split('\n')[1]!
+    await writeFile(testFile, (await readFile(testFile, 'utf8')).trimEnd() + '\n' + trainRow + '\n')
+    const result = await callTool(ctx, 'check_leakage', { splitFile })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as { ok: boolean; idOverlapCount: number; checks: Array<{ name: string; passed: boolean }> }
+    expect(value.ok).toBe(false)
+    expect(value.idOverlapCount).toBeGreaterThan(0)
+    expect(value.checks.find(c => c.name === 'id-column')!.passed).toBe(false)
+  })
+
+  it('fails a chronological split whose test rows precede train rows', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('date,v\n2024-01-01,a\n2024-01-02,b\n2024-01-03,c\n2024-01-04,d\n2024-01-05,e\n2024-01-06,f\n')
+    const splitFile = await doSplit(ctx, path, 'time', 'chronological', { ratio: 0.5, timeColumn: 'date' })
+    const { readFile, writeFile } = await import('node:fs/promises')
+    const { dirname } = await import('node:path')
+    const testFile = join(dirname(splitFile), 'test.csv')
+    const trainFile = join(dirname(splitFile), 'train.csv')
+    const trainText = await readFile(trainFile, 'utf8')
+    // overwrite test with the two earliest rows (which belong to train)
+    const earliest = trainText.trim().split('\n').slice(0, 3).join('\n')
+    await writeFile(testFile, earliest + '\n')
+    const result = await callTool(ctx, 'check_leakage', { splitFile })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const value = result.value as { ok: boolean; checks: Array<{ name: string; passed: boolean }> }
+    expect(value.ok).toBe(false)
+    expect(value.checks.find(c => c.name === 'time-order')!.passed).toBe(false)
+  })
+
+  it('fails loud on a missing split file', async () => {
+    const ctx = await setup()
+    const result = await callTool(ctx, 'check_leakage', { splitFile: '/no/such/split.json' })
+    expect(result.isError).toBe(true)
+  })
+})
+
 describe('bundled skills', () => {
   it('registers the three data-mining skills on ctx.skills', async () => {
     const ctx = await setup()

@@ -23,7 +23,7 @@ import {
 
 import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, selectRows, valueCounts, type RowSelection } from './profile.ts'
 import { discoverDataFiles } from './discover.ts'
-import { splitDatasetFile, type SplitStrategy } from './split.ts'
+import { splitDatasetFile, checkLeakageFile, type SplitStrategy } from './split.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
@@ -436,6 +436,56 @@ export function apply(ctx: Context): void {
         testFile,
         splitFile,
       }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'check_leakage',
+    description: 'Mechanically verify a recorded split (from split_dataset\'s split.json) against its files: row counts match the metadata, no exact duplicate rows cross train/test, no entity-key values cross the split (hard fail for group splits), and chronological splits keep every train row at or before the test boundary minus the gap. Any failing check means leakage — do not trust model scores until this passes. Whole-file reads: files over `maxBytes` fail the check rather than verify a partial read.',
+    parameters: {
+      splitFile: { type: 'string', required: true, description: 'Path to the split\'s split.json, as returned by split_dataset.' },
+      maxBytes: { type: 'integer', description: 'Maximum bytes to read from each side. Defaults to 67108864 (64 MiB).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          splitFile: { type: 'string', required: true },
+          datasetPath: { type: 'string', required: true },
+          strategy: { type: 'string', required: true, enum: ['random', 'chronological', 'group'] },
+          duplicateCount: { type: 'integer', required: true },
+          duplicateSamples: { type: 'array', required: true, items: { type: 'array', items: { type: 'string' } } },
+          idOverlapCount: { type: 'integer', required: true },
+          trainRows: { type: 'integer', required: true },
+          testRows: { type: 'integer', required: true },
+          checks: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                passed: { type: 'boolean', required: true },
+                detail: { type: 'string', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.checks.map(c => `${c.passed ? '✓' : '✗'} ${c.name}: ${c.detail}`).join('\n')
+          + `\n${value.ok ? 'LEAKAGE OK' : `LEAKAGE FAILED (${value.duplicateCount} duplicates, ${value.idOverlapCount} id overlaps)`}`,
+      }],
+    },
+    async execute(args, exec) {
+      if (!args.splitFile) throw new Error('check_leakage: `splitFile` must be a non-empty string')
+      const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
+      const result = await checkLeakageFile(args.splitFile, exec.signal, { maxBytes })
+      return { ...result, splitFile: args.splitFile }
     },
   }))
 

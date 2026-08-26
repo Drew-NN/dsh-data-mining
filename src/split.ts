@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseCsv, readCsvFile } from './profile.ts'
 
@@ -279,4 +279,192 @@ export async function splitDatasetFile(path: string, signal: AbortSignal, option
   }
   await writeFile(splitFile, JSON.stringify(metadata, null, 2))
   return { metadata, trainFile, testFile, splitFile }
+}
+
+/** One named leakage check outcome. */
+export interface LeakageCheck {
+  name: string
+  passed: boolean
+  detail: string
+}
+
+/** The `check_leakage` canonical result. */
+export interface LeakageCheckResult {
+  ok: boolean
+  datasetPath: string
+  strategy: SplitStrategy
+  checks: LeakageCheck[]
+  duplicateCount: number
+  /** Up to three duplicated rows (as cell arrays), for the report. */
+  duplicateSamples: string[][]
+  idOverlapCount: number
+  trainRows: number
+  testRows: number
+}
+
+/** Parse a table's time column; fails loud on any unparseable or empty value. */
+function parseTimeColumn(headers: readonly string[], rows: readonly (string | null)[][], column: string): number[] {
+  const ci = headers.indexOf(column)
+  if (ci === -1) throw new Error(`check_leakage: timeColumn "${column}" missing from headers`)
+  return rows.map((row, i) => {
+    const v = row[ci] ?? null
+    if (v === null || v.trim().length === 0) {
+      throw new Error(`check_leakage: empty time at row ${i + 1} of column "${column}"`)
+    }
+    const t = Date.parse(v.trim())
+    if (Number.isNaN(t)) throw new Error(`check_leakage: unparseable time "${v}" at row ${i + 1} of column "${column}"`)
+    return t
+  })
+}
+
+function maxOf(values: number[]): number {
+  let m = -Infinity
+  for (const v of values) if (v > m) m = v
+  return m
+}
+
+function minOf(values: number[]): number {
+  let m = Infinity
+  for (const v of values) if (v < m) m = v
+  return m
+}
+
+/**
+ * Verify a recorded split against its files: metadata presence, row counts,
+ * exact duplicate rows across train/test, entity-key overlap, and — for
+ * chronological splits — that no train row is later than a test row plus the
+ * gap. Every check is mechanical: a failing check means `ok: false`, never a
+ * softly adjusted verdict.
+ *
+ * Whole-file reads only: if either side exceeds `maxBytes`, the check fails
+ * loud instead of verifying a partial read.
+ * @param splitFile - path to the split's `split.json`.
+ * @param signal - cancellation.
+ * @param opts - the byte cap.
+ * @returns the check results.
+ */
+export async function checkLeakageFile(splitFile: string, signal: AbortSignal, opts: { maxBytes?: number } = {}): Promise<LeakageCheckResult> {
+  const maxBytes = opts.maxBytes ?? 64 * 1024 * 1024
+  let metadata: SplitMetadata
+  try {
+    metadata = JSON.parse(await readFile(splitFile, 'utf8')) as SplitMetadata
+  } catch (error) {
+    throw new Error(`check_leakage: cannot read split metadata "${splitFile}": ${(error as Error).message}`)
+  }
+  if (metadata.version !== 1) throw new Error(`check_leakage: unsupported split metadata version ${(metadata as { version?: unknown }).version}`)
+
+  const trainRead = await readCsvFile(metadata.trainFile, signal, { maxBytes })
+  const testRead = await readCsvFile(metadata.testFile, signal, { maxBytes })
+  if (trainRead.truncated || testRead.truncated) {
+    throw new Error(`check_leakage: train/test exceeds the ${maxBytes}-byte read cap; cannot verify leakage on a partial read. Raise maxBytes.`)
+  }
+  const train = parseCsv(trainRead.text)
+  const test = parseCsv(testRead.text)
+  const checks: LeakageCheck[] = []
+
+  const totalsOk = metadata.trainRows + metadata.testRows + metadata.droppedRows === metadata.totalRows
+  checks.push({
+    name: 'totals',
+    passed: totalsOk,
+    detail: `${metadata.trainRows}+${metadata.testRows}+${metadata.droppedRows}=${metadata.totalRows}${totalsOk ? '' : ' — does not equal the recorded totalRows'}`,
+  })
+
+  const countOk = train.totalDataLines === metadata.trainRows && test.totalDataLines === metadata.testRows
+  checks.push({
+    name: 'row-counts',
+    passed: countOk,
+    detail: `train ${train.totalDataLines}/${metadata.trainRows}, test ${test.totalDataLines}/${metadata.testRows}${countOk ? '' : ' — files no longer match the recorded split'}`,
+  })
+
+  const trainHashes = new Set<string>()
+  for (const row of train.rows) trainHashes.add(JSON.stringify(row))
+  const duplicateSamples: string[][] = []
+  let duplicateCount = 0
+  for (const row of test.rows) {
+    if (trainHashes.has(JSON.stringify(row))) {
+      duplicateCount++
+      if (duplicateSamples.length < 3) duplicateSamples.push(row.map(cell => cell ?? ''))
+    }
+  }
+  checks.push({
+    name: 'duplicates',
+    passed: duplicateCount === 0,
+    detail: duplicateCount === 0
+      ? 'no exact duplicate rows across train/test'
+      : `${duplicateCount} rows appear in both train and test`,
+  })
+
+  let idOverlapCount = 0
+  if (metadata.idColumn !== null) {
+    const ti = train.headers.indexOf(metadata.idColumn)
+    const si = test.headers.indexOf(metadata.idColumn)
+    if (ti === -1 || si === -1) {
+      checks.push({ name: 'id-column', passed: false, detail: `idColumn "${metadata.idColumn}" missing from train/test headers` })
+    } else {
+      const trainIds = new Set<string>()
+      for (const row of train.rows) {
+        const v = row[ti]
+        if (v !== null && v !== undefined) trainIds.add(v)
+      }
+      for (const row of test.rows) {
+        const v = row[si]
+        if (v !== null && v !== undefined && trainIds.has(v)) idOverlapCount++
+      }
+      const hardFail = metadata.strategy === 'group' && idOverlapCount > 0
+      checks.push({
+        name: 'id-column',
+        passed: !hardFail,
+        detail: idOverlapCount === 0
+          ? `no ${metadata.idColumn} overlap`
+          : `${idOverlapCount} ${metadata.idColumn} values appear on both sides${hardFail ? ' (group split: FAIL)' : ' (non-group split: warning)'}`,
+      })
+    }
+  }
+
+  if (metadata.timeColumn !== null) {
+    let trainTimes: number[]
+    let testTimes: number[]
+    try {
+      trainTimes = parseTimeColumn(train.headers, train.rows, metadata.timeColumn)
+      testTimes = parseTimeColumn(test.headers, test.rows, metadata.timeColumn)
+    } catch (error) {
+      checks.push({ name: 'time-order', passed: false, detail: (error as Error).message })
+      return finish(checks, metadata, duplicateCount, duplicateSamples, idOverlapCount, train.totalDataLines, test.totalDataLines)
+    }
+    const maxTrain = maxOf(trainTimes)
+    const minTest = minOf(testTimes)
+    const gapMs = (metadata.gapDays ?? 0) * 86_400_000
+    const ok = maxTrain + gapMs <= minTest
+    checks.push({
+      name: 'time-order',
+      passed: ok,
+      detail: ok
+        ? `max(train ${new Date(maxTrain).toISOString()}) + ${metadata.gapDays ?? 0}d <= min(test ${new Date(minTest).toISOString()})`
+        : `train contains rows at or after the test boundary (max train ${new Date(maxTrain).toISOString()} vs min test ${new Date(minTest).toISOString()})`,
+    })
+  }
+
+  return finish(checks, metadata, duplicateCount, duplicateSamples, idOverlapCount, train.totalDataLines, test.totalDataLines)
+}
+
+function finish(
+  checks: LeakageCheck[],
+  metadata: SplitMetadata,
+  duplicateCount: number,
+  duplicateSamples: string[][],
+  idOverlapCount: number,
+  trainRows: number,
+  testRows: number,
+): LeakageCheckResult {
+  return {
+    ok: checks.every(c => c.passed),
+    datasetPath: metadata.datasetPath,
+    strategy: metadata.strategy,
+    checks,
+    duplicateCount,
+    duplicateSamples,
+    idOverlapCount,
+    trainRows,
+    testRows,
+  }
 }

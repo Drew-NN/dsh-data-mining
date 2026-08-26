@@ -50,13 +50,13 @@
 
 **输出**：`{ datasetPath, name, strategy, totalRows, trainRows, testRows, droppedRows, trainFile, testFile, splitFile, seed, ratio, stratifyColumn, timeColumn, gapDays, groupColumn, idColumn }`（渲染为简短摘要）。
 
-**验收**：
-- [ ] random：seed 相同结果一致；train/test 行数按 ratio；行不重叠；并集 = 全集
-- [ ] stratify：每个层内比例 ≈ ratio（小样本下允许偏差）
-- [ ] chronological：train 全早于 test；gap 生效且有 droppedRows；时间不可解析报错
-- [ ] group：同一组值不跨切分；train 行数比例 ≈ ratio
-- [ ] 输出文件存在、split.json 与文件一致；可复现（同 seed 重跑产生相同文件）
-- [ ] 超 maxBytes 报错
+**验收**（M2.1 已完成，提交 5141b74）：
+- [x] random：seed 相同结果一致；train/test 行数按 ratio；行不重叠；并集 = 全集
+- [x] stratify：每个层内比例 ≈ ratio
+- [x] chronological：train 全早于 test；gap 生效且有 droppedRows；时间不可解析报错
+- [x] group：同一组值不跨切分；train 行数比例 ≈ ratio
+- [x] 输出文件存在、split.json 与文件一致；同 seed 重跑结果一致
+- [x] 超 maxBytes 报错
 
 ## M2.2 check_leakage
 
@@ -72,10 +72,14 @@
 
 **输出**：`{ ok, datasetPath, splitFile, checks: [{ name, passed, detail }], duplicateCount, idOverlapCount, droppedRows, trainRows, testRows }`；`ok=false` 时渲染明确列出失败项。
 
-**验收**：
-- [ ] 干净切分：全过，ok=true
-- [ ] 人为在 test 里插入 train 的行 → 重复检查失败
-- [ ] group 切分后 test 里出现 train 的 id → id 检查失败
-- [ ] 时序切分后打乱 test 顺序/混入早于 train 的行 → 时序检查失败
-- [ ] 篡改 train/test 行数 → 行数检查失败
-- [ ] 读取超 maxBytes 报错（不能静默地"检查一半"）
+**验收**（M2.2 已完成，提交见下）：
+- [x] 干净切分：全过，ok=true
+- [x] 人为在 test 里插入 train 的行 → 重复检查失败
+- [x] group 切分后 test 里出现 train 的 id → id 检查失败
+- [x] 时序切分后 test 混入早于 train 的行 → 时序检查失败
+- [x] 篡改 train/test 行数 → 行数检查失败（totals/row-counts）
+- [x] 读取超 maxBytes 报错（不能静默地"检查一半"）
+
+## Phase 2 总验收
+
+- [x] 全部 90 个测试通过（15 profile + 12 parsing + 12 split + 6 discover + 45 tool），构建通过
