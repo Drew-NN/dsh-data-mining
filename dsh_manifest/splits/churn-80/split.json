@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "datasetPath": "/tmp/dsh-smoke2-EpC8jf/churn.csv",
+  "name": "churn-80",
+  "strategy": "random",
+  "ratio": 0.8,
+  "seed": 7,
+  "stratifyColumn": "churned",
+  "timeColumn": null,
+  "gapDays": null,
+  "groupColumn": null,
+  "idColumn": "customer_id",
+  "totalRows": 200,
+  "trainRows": 160,
+  "testRows": 40,
+  "droppedRows": 0,
+  "trainFile": "/home/njd/openagent/dsh-data-mining/dsh_manifest/splits/churn-80/train.csv",
+  "testFile": "/home/njd/openagent/dsh-data-mining/dsh_manifest/splits/churn-80/test.csv",
+  "createdAt": "2026-08-26T07:29:27.697Z"
+}
