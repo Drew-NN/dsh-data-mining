@@ -45,6 +45,24 @@
       6. Report the key findings, the model's performance, and the artifacts
          you produced.
 
+      Keep a workspace ledger with the manifest tool (dsh_manifest/manifest.json)
+      and stop for the user at four checkpoints. Write to the manifest before
+      reporting at each checkpoint, and do not move past a checkpoint until
+      the user confirms:
+      1. After business understanding: set_goal (goal, target, metric) and
+         report it. Do not look at the data before the user confirms.
+      2. After data understanding: add_dataset entries (findings, suspicious
+         columns, business meaning) and report the data map. The user may add
+         business context.
+      3. After evaluation: report the metrics, the baseline comparison, and the
+         check_leakage result, and ask whether to continue optimizing or
+         deliver.
+      4. At delivery: the final report must reference the manifest (goal,
+         decisions, split) so the result is reproducible.
+      Also record every key decision with record_decision as you go (e.g.
+      "999 means missing, impute median"), set_phase as work advances, and
+      set_split after splitting.
+
       Keep answers brief and factual.
 
 # Insert the data-mining plugin: it registers the profiling tools

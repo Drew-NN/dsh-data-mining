@@ -23,7 +23,11 @@ import {
 
 import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, selectRows, valueCounts, type RowSelection } from './profile.ts'
 import { discoverDataFiles } from './discover.ts'
-import { splitDatasetFile, checkLeakageFile, type SplitStrategy } from './split.ts'
+import { splitDatasetFile, checkLeakageFile, readSplitMetadata, type SplitStrategy } from './split.ts'
+import {
+  MANIFEST_FILENAME, addDataset, loadManifest, recordDecision, saveManifest,
+  setGoal, setPhase, setSplitRef, type ManifestPhase,
+} from './manifest.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
@@ -486,6 +490,159 @@ export function apply(ctx: Context): void {
       const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
       const result = await checkLeakageFile(args.splitFile, exec.signal, { maxBytes })
       return { ...result, splitFile: args.splitFile }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'manifest',
+    description: 'Read or update the workspace ledger (`dsh_manifest/manifest.json`): the agreed goal, the current workflow phase, profiled datasets, the split reference, and every key decision. Use this to persist decisions across steps and at checkpoint boundaries — set_goal after business understanding, add_dataset after profiling a dataset, set_split after splitting, record_decision whenever a choice is made, set_phase as work advances. read returns the whole ledger. This ledger is what makes later steps reference earlier agreements and the final report reproducible.',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['read', 'set_goal', 'set_phase', 'add_dataset', 'record_decision', 'set_split'],
+        description: 'What to do with the ledger.',
+      },
+      manifestFile: { type: 'string', description: 'Manifest path override. Defaults to <cwd>/dsh_manifest/manifest.json.' },
+      statement: { type: 'string', description: 'set_goal: the one-sentence goal.' },
+      target: { type: 'string', description: 'set_goal: the target variable.' },
+      metric: { type: 'string', description: 'set_goal: the success metric.' },
+      constraints: { type: 'array', items: { type: 'string' }, description: 'set_goal: optional constraints (e.g. interpretability).' },
+      phase: { type: 'string', enum: ['business', 'data-understanding', 'data-collection', 'data-cleaning', 'split', 'preprocessing', 'modeling', 'evaluation', 'deployment', 'done'], description: 'set_phase: the current workflow phase.' },
+      path: { type: 'string', description: 'add_dataset: absolute dataset path.' },
+      notes: { type: 'string', description: 'add_dataset: findings, suspicious columns, business meaning.' },
+      text: { type: 'string', description: 'record_decision: the decision, e.g. "999 means missing, impute median".' },
+      splitFile: { type: 'string', description: 'set_split: split.json path as returned by split_dataset.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          version: { type: 'integer', required: true },
+          goal: {
+            required: true,
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  statement: { type: 'string', required: true },
+                  target: { type: 'string', required: true },
+                  metric: { type: 'string', required: true },
+                  constraints: { type: 'array', required: true, items: { type: 'string' } },
+                },
+              },
+              { type: 'null' },
+            ],
+          },
+          phase: {
+            required: true,
+            oneOf: [
+              { type: 'string', enum: ['business', 'data-understanding', 'data-collection', 'data-cleaning', 'split', 'preprocessing', 'modeling', 'evaluation', 'deployment', 'done'] },
+              { type: 'null' },
+            ],
+          },
+          datasets: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                notes: { type: 'string', required: true },
+                recordedAt: { type: 'string', required: true },
+              },
+            },
+          },
+          split: {
+            required: true,
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  splitFile: { type: 'string', required: true },
+                  strategy: { type: 'string', required: true, enum: ['random', 'chronological', 'group'] },
+                  trainFile: { type: 'string', required: true },
+                  testFile: { type: 'string', required: true },
+                },
+              },
+              { type: 'null' },
+            ],
+          },
+          decisions: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                text: { type: 'string', required: true },
+                phase: { type: 'string', required: true },
+                recordedAt: { type: 'string', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `ledger: phase=${value.phase ?? 'none'}`
+          + (value.goal ? ` | goal="${value.goal.statement}" target=${value.goal.target} metric=${value.goal.metric}` : '')
+          + ` | datasets=${value.datasets.length}`
+          + (value.split ? ` | split=${value.split.strategy} (${value.split.splitFile})` : '')
+          + ` | decisions=${value.decisions.length}`,
+      }],
+    },
+    async execute(args, _exec) {
+      const file = args.manifestFile ?? join(process.cwd(), 'dsh_manifest', MANIFEST_FILENAME)
+      const current = await loadManifest(file)
+      let next = current
+      switch (args.action) {
+        case 'read':
+          break
+        case 'set_goal': {
+          const statement = args.statement
+          const target = args.target
+          const metric = args.metric
+          if (!statement || !target || !metric) {
+            throw new Error('manifest set_goal: `statement`, `target`, and `metric` are required')
+          }
+          next = setGoal(current, args.constraints === undefined
+            ? { statement, target, metric }
+            : { statement, target, metric, constraints: args.constraints })
+          if (next.phase === null) next = setPhase(next, 'business')
+          break
+        }
+        case 'set_phase': {
+          if (args.phase === undefined) throw new Error('manifest set_phase: `phase` is required')
+          next = setPhase(current, args.phase as ManifestPhase)
+          break
+        }
+        case 'add_dataset': {
+          if (!args.path) throw new Error('manifest add_dataset: `path` is required')
+          next = addDataset(current, args.notes === undefined
+            ? { path: args.path }
+            : { path: args.path, notes: args.notes })
+          break
+        }
+        case 'record_decision': {
+          if (!args.text) throw new Error('manifest record_decision: `text` is required')
+          next = recordDecision(current, args.text)
+          break
+        }
+        case 'set_split': {
+          if (!args.splitFile) throw new Error('manifest set_split: `splitFile` is required')
+          const meta = await readSplitMetadata(args.splitFile)
+          next = setSplitRef(current, {
+            splitFile: args.splitFile,
+            strategy: meta.strategy,
+            trainFile: meta.trainFile,
+            testFile: meta.testFile,
+          })
+          break
+        }
+      }
+      if (next !== current) await saveManifest(file, next)
+      return next
     },
   }))
 

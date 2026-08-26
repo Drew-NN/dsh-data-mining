@@ -605,6 +605,83 @@ describe('check_leakage tool', () => {
   })
 })
 
+describe('manifest tool', () => {
+  it('registers the tool with the expected schema', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(s => s.name === 'manifest')
+    expect(schema).toBeDefined()
+    const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props)).toEqual([
+      'action', 'manifestFile', 'statement', 'target', 'metric', 'constraints',
+      'phase', 'path', 'notes', 'text', 'splitFile',
+    ])
+  })
+
+  async function ledger(ctx: Context, file: string) {
+    return (await callTool(ctx, 'manifest', { action: 'read', manifestFile: file })).value as {
+      goal: { statement: string; target: string; metric: string; constraints: string[] } | null
+      phase: string | null
+      datasets: Array<{ path: string; notes: string; recordedAt: string }>
+      split: { splitFile: string; strategy: string; trainFile: string; testFile: string } | null
+      decisions: Array<{ text: string; phase: string; recordedAt: string }>
+    }
+  }
+
+  it('records a goal and reads it back', async () => {
+    const ctx = await setup()
+    const file = join(tmpdir(), `dsh-manifest-tool-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    tempDirs.push(file)
+    const result = await callTool(ctx, 'manifest', {
+      action: 'set_goal', manifestFile: file,
+      statement: 'predict churn', target: 'churn', metric: 'AUC',
+    })
+    expect(result.isError).toBe(false)
+    if (result.isError) throw new Error('expected success')
+    const m = await ledger(ctx, file)
+    expect(m.goal).toEqual({ statement: 'predict churn', target: 'churn', metric: 'AUC', constraints: [] })
+    expect(m.phase).toBe('business')
+  })
+
+  it('appends datasets and decisions across calls', async () => {
+    const ctx = await setup()
+    const file = join(tmpdir(), `dsh-manifest-tool2-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    tempDirs.push(file)
+    await callTool(ctx, 'manifest', { action: 'set_phase', manifestFile: file, phase: 'data-understanding' })
+    await callTool(ctx, 'manifest', { action: 'add_dataset', manifestFile: file, path: '/a.csv', notes: 'missing calls' })
+    await callTool(ctx, 'manifest', { action: 'add_dataset', manifestFile: file, path: '/b.csv' })
+    await callTool(ctx, 'manifest', { action: 'record_decision', manifestFile: file, text: 'drop city' })
+    const m = await ledger(ctx, file)
+    expect(m.datasets).toHaveLength(2)
+    expect(m.datasets[0]).toMatchObject({ path: '/a.csv', notes: 'missing calls' })
+    expect(m.datasets[1]).toMatchObject({ path: '/b.csv', notes: '' })
+    expect(m.decisions).toEqual([{ text: 'drop city', phase: 'data-understanding', recordedAt: expect.any(String) }])
+  })
+
+  it('records a split reference from split.json', async () => {
+    const ctx = await setup()
+    const path = await makeCsv('id,v\na,1\nb,2\nc,3\nd,4\ne,5\nf,6\ng,7\nh,8\ni,9\nj,10\n')
+    const outDir = join(tmpdir(), `dsh-manifest-split-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    tempDirs.push(outDir)
+    const split = await callTool(ctx, 'split_dataset', { path, name: 's', strategy: 'random', ratio: 0.8, seed: 1, outDir })
+    const splitFile = (split.value as { splitFile: string }).splitFile
+    const file = join(tmpdir(), `dsh-manifest-tool3-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    tempDirs.push(file)
+    await callTool(ctx, 'manifest', { action: 'set_split', manifestFile: file, splitFile })
+    const m = await ledger(ctx, file)
+    expect(m.split).toMatchObject({ strategy: 'random' })
+    expect(m.split!.trainFile.endsWith('train.csv')).toBe(true)
+    expect(m.split!.testFile.endsWith('test.csv')).toBe(true)
+  })
+
+  it('fails loud when required arguments are missing', async () => {
+    const ctx = await setup()
+    const file = join(tmpdir(), `dsh-manifest-tool4-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
+    tempDirs.push(file)
+    const result = await callTool(ctx, 'manifest', { action: 'set_goal', manifestFile: file, statement: 'only' })
+    expect(result.isError).toBe(true)
+  })
+})
+
 describe('bundled skills', () => {
   it('registers the three data-mining skills on ctx.skills', async () => {
     const ctx = await setup()

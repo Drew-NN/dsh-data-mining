@@ -330,6 +330,25 @@ function minOf(values: number[]): number {
 }
 
 /**
+ * Read and validate a recorded split's metadata (`split.json`). Unknown
+ * versions fail loud.
+ * @param splitFile - path to the split.json.
+ * @returns the parsed metadata.
+ */
+export async function readSplitMetadata(splitFile: string): Promise<SplitMetadata> {
+  let metadata: SplitMetadata
+  try {
+    metadata = JSON.parse(await readFile(splitFile, 'utf8')) as SplitMetadata
+  } catch (error) {
+    throw new Error(`cannot read split metadata "${splitFile}": ${(error as Error).message}`)
+  }
+  if (metadata.version !== 1) {
+    throw new Error(`unsupported split metadata version ${String((metadata as { version?: unknown }).version)}`)
+  }
+  return metadata
+}
+
+/**
  * Verify a recorded split against its files: metadata presence, row counts,
  * exact duplicate rows across train/test, entity-key overlap, and — for
  * chronological splits — that no train row is later than a test row plus the
@@ -345,13 +364,7 @@ function minOf(values: number[]): number {
  */
 export async function checkLeakageFile(splitFile: string, signal: AbortSignal, opts: { maxBytes?: number } = {}): Promise<LeakageCheckResult> {
   const maxBytes = opts.maxBytes ?? 64 * 1024 * 1024
-  let metadata: SplitMetadata
-  try {
-    metadata = JSON.parse(await readFile(splitFile, 'utf8')) as SplitMetadata
-  } catch (error) {
-    throw new Error(`check_leakage: cannot read split metadata "${splitFile}": ${(error as Error).message}`)
-  }
-  if (metadata.version !== 1) throw new Error(`check_leakage: unsupported split metadata version ${(metadata as { version?: unknown }).version}`)
+  const metadata = await readSplitMetadata(splitFile)
 
   const trainRead = await readCsvFile(metadata.trainFile, signal, { maxBytes })
   const testRead = await readCsvFile(metadata.testFile, signal, { maxBytes })
