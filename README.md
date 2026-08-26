@@ -9,7 +9,7 @@ Installing this bundle adds three things to your profile:
 | Contribution | What it does |
 |---|---|
 | **Data-scientist persona** | Replaces the profile persona: discover the workspace first, profile before coding, validate without leakage, report findings |
-| **Data tools** (`profile_dataset`, `sample_rows`) | Give the model a proxy view of datasets that cannot fit in its context window (schema, missing rates, sample values) |
+| **Data tools** (`profile_dataset`, `sample_rows`) | Give the model a proxy view of datasets that cannot fit in its context window (schema, missing rates, distribution stats, sample values) — robust CSV parsing (BOM, delimiter detection), byte/row caps with honest `sampled`/`truncated` flags |
 | **Domain skills** (`data-mining-workflow`, `data-leakage-prevention`, `data-quality-assessment`) | CRISP-DM workflow discipline, the leakage rules that keep test information out of training, and a systematic data-quality assessment checklist — loaded on demand |
 
 Everything is one package: the tools and skills are registered by the same plugin, and the persona lives in the bundle's patch layer.
@@ -57,7 +57,7 @@ dsh --profile headless --dump-config | grep -A2 "data-mining"
 ```sh
 pnpm install
 pnpm run build     # tsc → lib/
-pnpm test          # vitest (21 tests)
+pnpm test          # vitest (48 tests)
 ```
 
 To test the bundle end to end in an isolated profile:
