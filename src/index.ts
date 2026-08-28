@@ -24,6 +24,7 @@ import {
 import { buildProfile, DEFAULT_MAX_BYTES, parseCsv, readCsvFile, selectRows, valueCounts, type RowSelection } from './profile.ts'
 import { discoverDataFiles } from './discover.ts'
 import { splitDatasetFile, checkLeakageFile, readSplitMetadata, type SplitStrategy } from './split.ts'
+import { dmStatusCommand, type DmCommandResult } from './command.ts'
 import {
   MANIFEST_FILENAME, addDataset, loadManifest, recordDecision, saveManifest,
   setGoal, setPhase, setSplitRef, type ManifestPhase,
@@ -656,6 +657,23 @@ export function apply(ctx: Context): void {
   }))
 
   
+
+  const commands = ctx.get('commands') as
+    | { register(cmd: { name: string; description: string; input: { hint: string }; handler: (i: { rawInput: string; agent?: { session?: { header?: { cwd?: string } } } }) => DmCommandResult | Promise<DmCommandResult> }): void }
+    | undefined
+  if (commands !== undefined) {
+    commands.register({
+      name: 'dm',
+      description: 'show the data-mining workspace progress (ledger summary)',
+      input: { hint: 'status' },
+      handler: (invocation) => {
+        if (invocation.rawInput.trim().startsWith('status')) {
+          return dmStatusCommand(invocation)
+        }
+        return { kind: 'success', text: 'Usage: /dm status' }
+      },
+    })
+  }
 
   ctx.skills.registerProvider(() => skillProvider)
 }
