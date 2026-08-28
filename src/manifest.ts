@@ -117,11 +117,15 @@ export async function loadManifest(filePath: string): Promise<Manifest> {
   }
   const parsed = JSON.parse(raw) as Partial<Manifest>
   if (parsed.version !== 1) throw new Error(`manifest: unsupported version ${String(parsed.version)}`)
+  // Older gate-era manifests carried a `phaseGates` key; it no longer exists
+  // and must not leak into returned values or the tool's output schema.
+  const legacy = parsed as Partial<Manifest> & { phaseGates?: unknown }
+  const { phaseGates: _legacy, ...rest } = legacy
   return {
     ...emptyManifest(),
-    ...parsed,
-    datasets: parsed.datasets ?? [],
-    decisions: parsed.decisions ?? [],
+    ...rest,
+    datasets: rest.datasets ?? [],
+    decisions: rest.decisions ?? [],
   }
 }
 

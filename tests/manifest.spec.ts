@@ -95,3 +95,37 @@ describe('manifest pure functions', () => {
   })
 })
 
+
+describe('legacy phaseGates handling', () => {
+  it('strips a stale phaseGates key from an old manifest on load', async () => {
+    const file = await tempFile()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(file, JSON.stringify({
+      version: 1,
+      goal: null,
+      phase: null,
+      datasets: [],
+      decisions: [],
+      phaseGates: { business: { status: 'done' } }, // stale gate-era key
+    }))
+    const m = await loadManifest(file)
+    expect('phaseGates' in m).toBe(false)
+    expect(m).toEqual(emptyManifest())
+  })
+
+  it('keeps real fields alongside a stripped legacy key', async () => {
+    const file = await tempFile()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(file, JSON.stringify({
+      version: 1,
+      goal: { statement: 'g', target: 't', metric: 'm', constraints: [] },
+      datasets: [{ path: '/a.csv', notes: '', recordedAt: 'x' }],
+      decisions: [],
+      phaseGates: { business: { status: 'done' } },
+    }))
+    const m = await loadManifest(file)
+    expect('phaseGates' in m).toBe(false)
+    expect(m.goal).toEqual({ statement: 'g', target: 't', metric: 'm', constraints: [] })
+    expect(m.datasets).toHaveLength(1)
+  })
+})

@@ -34,6 +34,14 @@ export const name = 'data-mining'
 /** Services required by the tools and the bundled skill provider. */
 export const inject = ['tools', 'skills']
 
+/**
+ * The workspace the calling session runs in: the session's immutable cwd,
+ * falling back to the process cwd (headless and test calls without an agent).
+ */
+function workspaceCwd(exec: { agent?: { session?: { header?: { cwd?: string } } } }): string {
+  return exec.agent?.session?.header?.cwd ?? process.cwd()
+}
+
 
 // ── Bundled skills ─────────────────────────────────────────────────────────
 
@@ -358,7 +366,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
-      const dir = args.dir === undefined ? process.cwd() : args.dir
+      const dir = args.dir === undefined ? workspaceCwd(exec) : args.dir
       const maxDepth = args.maxDepth === undefined ? 3 : Math.max(1, Math.min(10, args.maxDepth))
       const maxFiles = args.maxFiles === undefined ? 200 : Math.max(1, Math.min(2000, args.maxFiles))
       return discoverDataFiles(dir, { maxDepth, maxFiles, signal: exec.signal })
@@ -413,7 +421,7 @@ export function apply(ctx: Context): void {
       const ratio = args.ratio === undefined ? 0.8 : Math.min(0.95, Math.max(0.05, args.ratio))
       const seed = args.seed === undefined ? 42 : Math.max(0, Math.floor(args.seed))
       const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
-      const outDir = args.outDir ?? join(process.cwd(), 'dsh_manifest', 'splits', args.name)
+      const outDir = args.outDir ?? join(workspaceCwd(exec), 'dsh_manifest', 'splits', args.name)
       const { metadata, trainFile, testFile, splitFile } = await splitDatasetFile(args.path, exec.signal, {
         strategy,
         ratio,
@@ -593,8 +601,8 @@ export function apply(ctx: Context): void {
           + ` | decisions=${value.decisions.length}`,
       }],
     },
-    async execute(args, _exec) {
-      const file = args.manifestFile ?? join(process.cwd(), 'dsh_manifest', MANIFEST_FILENAME)
+    async execute(args, exec) {
+      const file = args.manifestFile ?? join(workspaceCwd(exec), 'dsh_manifest', MANIFEST_FILENAME)
       const current = await loadManifest(file)
       let next = current
       switch (args.action) {
