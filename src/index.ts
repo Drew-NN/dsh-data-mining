@@ -27,12 +27,20 @@ import { splitDatasetFile, checkLeakageFile, readSplitMetadata, type SplitStrate
 import {
   MANIFEST_FILENAME, addDataset, loadManifest, recordDecision, saveManifest,
   setGoal, setPhase, setSplitRef, type ManifestPhase,
+  PHASE_ORDER, assertGateOpen, confirmComplete, forceComplete, gateStatus,
+  initPhaseGates, nextPhase, redoPhase, requestComplete,
 } from './manifest.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
 /** Services required by the tools and the bundled skill provider. */
 export const inject = ['tools', 'skills']
+
+/** Read the workspace manifest and reject the call when the phase gate is not open. */
+async function gateCheck(phase: ManifestPhase): Promise<void> {
+  const gatesManifest = await loadManifest(join(process.cwd(), 'dsh_manifest', MANIFEST_FILENAME))
+  assertGateOpen(gatesManifest, phase)
+}
 
 // ── Bundled skills ─────────────────────────────────────────────────────────
 
@@ -172,6 +180,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
+      await gateCheck('data-understanding')
       if (!args.path) throw new Error('profile_dataset: `path` must be a non-empty string')
       const maxSample = args.maxSample === undefined ? 5 : Math.max(1, Math.min(20, args.maxSample))
       const maxRows = args.maxRows === undefined ? 100_000 : Math.max(1, Math.min(1_000_000, args.maxRows))
@@ -223,6 +232,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
+      await gateCheck('data-understanding')
       if (!args.path) throw new Error('sample_rows: `path` must be a non-empty string')
       const offset = args.offset === undefined ? 0 : Math.max(0, args.offset)
       const limit = args.limit === undefined ? 10 : Math.max(1, Math.min(100, args.limit))
@@ -295,6 +305,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
+      await gateCheck('data-understanding')
       if (!args.path) throw new Error('value_counts: `path` must be a non-empty string')
       if (!args.column) throw new Error('value_counts: `column` must be a non-empty string')
       const topK = args.topK === undefined ? 10 : Math.max(1, Math.min(50, args.topK))
@@ -357,6 +368,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
+      await gateCheck('data-understanding')
       const dir = args.dir === undefined ? process.cwd() : args.dir
       const maxDepth = args.maxDepth === undefined ? 3 : Math.max(1, Math.min(10, args.maxDepth))
       const maxFiles = args.maxFiles === undefined ? 200 : Math.max(1, Math.min(2000, args.maxFiles))
@@ -406,6 +418,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
+      await gateCheck('split')
       if (!args.path) throw new Error('split_dataset: `path` must be a non-empty string')
       if (!args.name) throw new Error('split_dataset: `name` must be a non-empty string')
       const strategy = args.strategy as SplitStrategy
@@ -486,6 +499,7 @@ export function apply(ctx: Context): void {
       }],
     },
     async execute(args, exec) {
+      await gateCheck('split')
       if (!args.splitFile) throw new Error('check_leakage: `splitFile` must be a non-empty string')
       const maxBytes = args.maxBytes === undefined ? DEFAULT_MAX_BYTES : Math.max(1, args.maxBytes)
       const result = await checkLeakageFile(args.splitFile, exec.signal, { maxBytes })
@@ -642,9 +656,142 @@ export function apply(ctx: Context): void {
         }
       }
       if (next !== current) await saveManifest(file, next)
-      return next
+      // The gate state is owned by the dm tool's own surface; keep the
+      // manifest tool's output schema (which predates gates) unchanged by
+      // stripping phaseGates from the model-visible value.
+      const visible = { ...next }
+      delete (visible as { phaseGates?: unknown }).phaseGates
+      return visible
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'dm',
+    description: 'Phase-gate control for the data-mining workflow (PHASE-GATE design): the model proposes (complete), the system verifies exit conditions, and the user approves (confirm) before the next phase unlocks. Only the currently unlocked phase may execute tools — calls from locked phases are rejected. Actions: enable (install the gate layout, business unlocked), phase (query all gate states), complete (submit a phase for completion after verifying its exit conditions), confirm (user approval: pending → done, unlocks the next phase), redo (unlock a phase and relock everything after it), force (complete without verification, recording the reason).',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['enable', 'phase', 'complete', 'confirm', 'redo', 'force'],
+        description: 'Gate operation.',
+      },
+      manifestFile: { type: 'string', description: 'Manifest path override. Defaults to <cwd>/dsh_manifest/manifest.json.' },
+      phase: { type: 'string', enum: ['business', 'data-understanding', 'data-collection', 'data-cleaning', 'split', 'preprocessing', 'modeling', 'evaluation', 'deployment', 'done'], description: 'Target phase for complete/confirm/redo/force.' },
+      reason: { type: 'string', description: 'force: why the verification is being overridden.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          phase: {
+            required: true,
+            oneOf: [
+              { type: 'string', enum: ['business', 'data-understanding', 'data-collection', 'data-cleaning', 'split', 'preprocessing', 'modeling', 'evaluation', 'deployment', 'done'] },
+              { type: 'null' },
+            ],
+          },
+          gates: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                phase: { type: 'string', required: true },
+                status: { type: 'string', required: true, enum: ['locked', 'unlocked', 'pending', 'done'] },
+                overrideReason: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.gates.map(g => `${g.phase}: ${g.status}${g.overrideReason ? ` (forced: ${g.overrideReason})` : ''}`).join(' | '),
+      }],
+    },
+    async execute(args, _exec) {
+      const file = args.manifestFile ?? join(process.cwd(), 'dsh_manifest', MANIFEST_FILENAME)
+      const m = await loadManifest(file)
+      const gates = m.phaseGates
+      if (args.action === 'enable') {
+        if (gates !== undefined) {
+          return renderGates(m.phase, gates)
+        }
+        const enabled = { ...m, phaseGates: initPhaseGates() }
+        await saveManifest(file, enabled)
+        return renderGates(enabled.phase, enabled.phaseGates)
+      }
+      if (gates === undefined) {
+        throw new Error('dm: phase gates are not enabled — call dm with action enable first')
+      }
+      const phase = args.phase as ManifestPhase
+      if (args.action === 'phase') return renderGates(m.phase, gates)
+
+      if (args.action === 'complete') {
+        const missing = verifyExitConditions(phase, m)
+        if (missing.length > 0) {
+          throw new Error(`dm: cannot complete "${phase}" — missing: ${missing.join(', ')}`)
+        }
+        const nextGates = requestComplete(gates, phase)
+        await saveManifest(file, { ...m, phaseGates: nextGates })
+        return renderGates(m.phase, nextGates)
+      }
+      if (args.action === 'confirm') {
+        const nextGates = confirmComplete(gates, phase)
+        const next = nextPhase(phase) ?? phase
+        const updated = { ...m, phaseGates: nextGates, phase: next }
+        await saveManifest(file, updated)
+        return renderGates(next, nextGates)
+      }
+      if (args.action === 'redo') {
+        const nextGates = redoPhase(gates, phase)
+        const updated = { ...m, phaseGates: nextGates, phase }
+        await saveManifest(file, updated)
+        return renderGates(phase, nextGates)
+      }
+      if (args.action === 'force') {
+        const nextGates = forceComplete(gates, phase, args.reason ?? 'user forced')
+        const next = nextPhase(phase) ?? phase
+        const updated = { ...m, phaseGates: nextGates, phase: next }
+        await saveManifest(file, updated)
+        return renderGates(next, nextGates)
+      }
+      throw new Error(`dm: unknown action ${String(args.action)}`)
     },
   }))
 
   ctx.skills.registerProvider(() => skillProvider)
+}
+
+/** Verify a phase's machine-checkable exit conditions; returns what is missing. */
+function verifyExitConditions(phase: ManifestPhase, m: import('./manifest.ts').Manifest): string[] {
+  if (phase === 'business') {
+    const goal = m.goal
+    if (goal === null || !goal.statement || !goal.target || !goal.metric) return ['set_goal (statement/target/metric)']
+    return []
+  }
+  if (phase === 'data-understanding') {
+    return m.datasets.length > 0 ? [] : ['add_dataset entries (profile each dataset first)']
+  }
+  if (phase === 'split') {
+    return m.split !== null ? [] : ['set_split (run split_dataset first)']
+  }
+  return []
+}
+
+/** Render the gate layout as an ordered array for the dm tool's output. */
+function renderGates(
+  phase: ManifestPhase | null,
+  gates: import('./manifest.ts').PhaseGates,
+): { phase: ManifestPhase | null; gates: Array<{ phase: string; status: import('./manifest.ts').GateStatus; overrideReason?: string }> } {
+  const list: Array<{ phase: string; status: import('./manifest.ts').GateStatus; overrideReason?: string }> = []
+  for (const p of PHASE_ORDER) {
+    const item: { phase: string; status: import('./manifest.ts').GateStatus; overrideReason?: string } = { phase: p, status: gateStatus(gates, p) }
+    const reason = gates[p]?.overrideReason
+    if (reason !== undefined) item.overrideReason = reason
+    list.push(item)
+  }
+  return { phase, gates: list }
 }
