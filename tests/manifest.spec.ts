@@ -5,8 +5,6 @@ import { describe, expect, it, afterEach } from 'vitest'
 import {
   addDataset, emptyManifest, loadManifest, recordDecision, saveManifest,
   setGoal, setPhase, setSplitRef,
-  confirmComplete, forceComplete, initPhaseGates, isGateExecutable,
-  redoPhase, requestComplete,
 } from '../src/manifest.ts'
 
 const tempDirs: string[] = []
@@ -97,70 +95,3 @@ describe('manifest pure functions', () => {
   })
 })
 
-describe('phaseGates state machine', () => {
-  it('initializes with business unlocked and everything else locked', () => {
-    const g = initPhaseGates()
-    expect(g['business']!.status).toBe('unlocked')
-    for (const p of ['data-understanding', 'data-cleaning', 'split', 'modeling', 'evaluation', 'deployment', 'done']) {
-      expect(g[p as keyof typeof g]!.status).toBe('locked')
-    }
-  })
-
-  it('requestComplete moves unlocked to pending and rejects locked phases', () => {
-    let g = initPhaseGates()
-    g = requestComplete(g, 'business')
-    expect(g['business']!.status).toBe('pending')
-    expect(() => requestComplete(g, 'data-understanding')).toThrow()
-  })
-
-  it('confirmComplete marks done and unlocks the next phase', () => {
-    let g = initPhaseGates()
-    g = requestComplete(g, 'business')
-    g = confirmComplete(g, 'business')
-    expect(g['business']!.status).toBe('done')
-    expect(g['data-understanding']!.status).toBe('unlocked')
-    expect(g['data-cleaning']!.status).toBe('locked')
-  })
-
-  it('only the direct successor unlocks', () => {
-    let g = initPhaseGates()
-    g = requestComplete(g, 'business')
-    g = confirmComplete(g, 'business')
-    // data-understanding done -> data-collection unlocks (its direct successor);
-    // data-cleaning stays locked until data-collection completes
-    g = requestComplete(g, 'data-understanding')
-    g = confirmComplete(g, 'data-understanding')
-    expect(g['data-collection']!.status).toBe('unlocked')
-    expect(g['data-cleaning']!.status).toBe('locked')
-  })
-
-  it('redo unlocks the phase and relocks everything after it', () => {
-    let g = initPhaseGates()
-    g = requestComplete(g, 'business')
-    g = confirmComplete(g, 'business')
-    g = requestComplete(g, 'data-understanding')
-    g = confirmComplete(g, 'data-understanding')
-    g = redoPhase(g, 'business')
-    expect(g['business']!.status).toBe('unlocked')
-    expect(g['data-understanding']!.status).toBe('locked')
-    expect(g['data-cleaning']!.status).toBe('locked')
-  })
-
-  it('forceComplete bypasses verification and records the reason', () => {
-    const g = forceComplete(initPhaseGates(), 'business', 'user said skip')
-    expect(g['business']!.status).toBe('done')
-    expect(g['business']!.overrideReason).toBe('user said skip')
-    expect(g['data-understanding']!.status).toBe('unlocked')
-  })
-
-  it('isGateExecutable allows unlocked and done but not locked or pending', () => {
-    const g = initPhaseGates()
-    expect(isGateExecutable(g, 'business')).toBe(true) // unlocked
-    const g2 = requestComplete(g, 'business')
-    expect(isGateExecutable(g2, 'business')).toBe(false) // pending
-    const g3 = confirmComplete(g2, 'business')
-    expect(isGateExecutable(g3, 'business')).toBe(true) // done
-    expect(isGateExecutable(g3, 'data-understanding')).toBe(true) // unlocked by the confirmation
-    expect(isGateExecutable(g3, 'split')).toBe(false) // still locked
-  })
-})

@@ -51,23 +51,21 @@
       6. Report the key findings, the model's performance, and the artifacts
          you produced.
 
-      Keep a workspace ledger with the manifest tool (dsh_manifest/manifest.json)
-      and stop for the user at four checkpoints. Write to the manifest before
-      reporting at each checkpoint, and do not move past a checkpoint until
-      the user confirms:
-      1. After business understanding: set_goal (goal, target, metric) and
-         report it. Do not look at the data before the user confirms.
-      2. After data understanding: add_dataset entries (findings, suspicious
-         columns, business meaning) and report the data map. The user may add
-         business context.
-      3. After evaluation: report the metrics, the baseline comparison, and the
-         check_leakage result, and ask whether to continue optimizing or
-         deliver.
-      4. At delivery: the final report must reference the manifest (goal,
-         decisions, split) so the result is reproducible.
-      Also record every key decision with record_decision as you go (e.g.
-      "999 means missing, impute median"), set_phase as work advances, and
-      set_split after splitting.
+      Keep a workspace ledger with the manifest tool (dsh_manifest/manifest.json):
+      the agreed goal, the phase you are on, profiled datasets, the split, and
+      every key decision. Use set_goal / add_dataset / set_split /
+      record_decision / set_phase as work advances, so the ledger always says
+      what has been done.
+
+      Before starting any task, and whenever you are about to act as a worker
+      that depends on an earlier stage (e.g. modeling depends on data
+      understanding), READ the ledger first and check the recorded progress:
+      - If the required earlier stage is done (its entry exists in the
+        manifest), proceed.
+      - If it is NOT done, do not attempt to work around it. Report to the
+        user instead: "前置阶段 X 还没完成，需要先完成 X 并记录到
+        manifest（或由我先把方案讨论好，等你确认 X 的产出）", then stop
+        and wait for the user's direction.
 
       Keep answers brief and factual.
 
