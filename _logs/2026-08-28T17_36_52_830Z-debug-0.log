@@ -1,0 +1,18 @@
+0 verbose cli /home/njd/miniconda3/envs/openharness/bin/node /home/njd/miniconda3/envs/openharness/bin/npm
+1 info using npm@11.17.0
+2 info using node@v26.5.0
+3 silly config load:file:/home/njd/miniconda3/envs/openharness/lib/node_modules/npm/npmrc
+4 silly config load:file:/home/njd/openagent/dsh-data-mining/.npmrc
+5 silly config load:file:/home/njd/.npmrc
+6 silly config load:file:/home/njd/miniconda3/envs/openharness/etc/npmrc
+7 verbose title npm .npm-cache view tsdown version
+8 verbose argv "--cache" "./" ".npm-cache" "view" "tsdown" "version"
+9 verbose logfile logs-max:10 dir:/home/njd/openagent/dsh-data-mining/_logs/2026-08-28T17_36_52_830Z-
+10 verbose logfile /home/njd/openagent/dsh-data-mining/_logs/2026-08-28T17_36_52_830Z-debug-0.log
+11 silly logfile done cleaning log files
+12 verbose cwd /home/njd/openagent/dsh-data-mining
+13 verbose os Linux 6.8.0-138-generic
+14 verbose node v26.5.0
+15 verbose npm  v11.17.0
+16 verbose exit 1
+17 verbose code 1
