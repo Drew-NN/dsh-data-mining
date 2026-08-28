@@ -714,7 +714,7 @@ describe('dm gate tool', () => {
     const schema = ctx.tools.schemas().find(s => s.name === 'dm')
     expect(schema).toBeDefined()
     const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    expect(Object.keys(props)).toEqual(['action', 'manifestFile', 'phase', 'reason'])
+    expect(Object.keys(props)).toEqual(['action', 'manifestFile', 'phase'])
   })
 
   async function manifestFile(ctx: Context): Promise<string> {
@@ -758,44 +758,18 @@ describe('dm gate tool', () => {
     expect(r.isError).toBe(true)
   })
 
-  it('complete -> pending, confirm -> done and unlocks data-understanding', async () => {
+  it('complete stays pending without a confirmation channel (no self-approval)', async () => {
     const ctx = await setup()
     const file = await manifestFile(ctx)
     await dm(ctx, file, { action: 'enable' })
     await callTool(ctx, 'manifest', { action: 'set_goal', manifestFile: file, statement: 'predict churn', target: 'churn', metric: 'AUC' })
-    const pending = await dm(ctx, file, { action: 'complete', phase: 'business' })
-    const pg = (pending.value as { gates: Array<{ phase: string; status: string }> }).gates
-    expect(pg.find(g => g.phase === 'business')!.status).toBe('pending')
-    const done = await dm(ctx, file, { action: 'confirm', phase: 'business' })
-    const gates = (done.value as { gates: Array<{ phase: string; status: string }> }).gates
-    expect(gates.find(g => g.phase === 'business')!.status).toBe('done')
-    expect(gates.find(g => g.phase === 'data-understanding')!.status).toBe('unlocked')
-  })
-
-  it('redo relocks the phases after it', async () => {
-    const ctx = await setup()
-    const file = await manifestFile(ctx)
-    await dm(ctx, file, { action: 'enable' })
-    await callTool(ctx, 'manifest', { action: 'set_goal', manifestFile: file, statement: 'g', target: 't', metric: 'm' })
-    await dm(ctx, file, { action: 'complete', phase: 'business' })
-    await dm(ctx, file, { action: 'confirm', phase: 'business' })
-    const r = await dm(ctx, file, { action: 'redo', phase: 'business' })
+    const r = await dm(ctx, file, { action: 'complete', phase: 'business' })
+    expect(r.isError).toBe(false)
     const gates = (r.value as { gates: Array<{ phase: string; status: string }> }).gates
-    expect(gates.find(g => g.phase === 'business')!.status).toBe('unlocked')
+    expect(gates.find(g => g.phase === 'business')!.status).toBe('pending')
     expect(gates.find(g => g.phase === 'data-understanding')!.status).toBe('locked')
   })
 
-  it('force completes without verification and records the reason', async () => {
-    const ctx = await setup()
-    const file = await manifestFile(ctx)
-    await dm(ctx, file, { action: 'enable' })
-    const r = await dm(ctx, file, { action: 'force', phase: 'business', reason: 'user insists' })
-    const gates = (r.value as { gates: Array<{ phase: string; status: string; overrideReason?: string }> }).gates
-    const b = gates.find(g => g.phase === 'business')!
-    expect(b.status).toBe('done')
-    expect(b.overrideReason).toBe('user insists')
-    expect(gates.find(g => g.phase === 'data-understanding')!.status).toBe('unlocked')
-  })
 })
 
 describe('tool gates (execution enforcement)', () => {

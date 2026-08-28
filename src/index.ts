@@ -27,7 +27,7 @@ import { splitDatasetFile, checkLeakageFile, readSplitMetadata, type SplitStrate
 import {
   MANIFEST_FILENAME, addDataset, loadManifest, recordDecision, saveManifest,
   setGoal, setPhase, setSplitRef, type ManifestPhase,
-  PHASE_ORDER, assertGateOpen, confirmComplete, forceComplete, gateStatus,
+  PHASE_ORDER, assertGateOpen, confirmComplete, gateStatus,
   initPhaseGates, nextPhase, redoPhase, requestComplete,
 } from './manifest.ts'
 
@@ -667,17 +667,16 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'dm',
-    description: 'Phase-gate control for the data-mining workflow (PHASE-GATE design): the model proposes (complete), the system verifies exit conditions, and the user approves (confirm) before the next phase unlocks. Only the currently unlocked phase may execute tools — calls from locked phases are rejected. Actions: enable (install the gate layout, business unlocked), phase (query all gate states), complete (submit a phase for completion after verifying its exit conditions), confirm (user approval: pending → done, unlocks the next phase), redo (unlock a phase and relock everything after it), force (complete without verification, recording the reason).',
+    description: 'Phase-gate control for the data-mining workflow (PHASE-GATE design): the model proposes (complete), the system verifies exit conditions, and the USER approves — completion is never self-granted. Only the currently unlocked phase may execute tools; calls from locked phases are rejected. Actions: enable (install the gate layout, business unlocked), phase (query all gate states), complete (submit a phase for completion after verifying its exit conditions, then WAIT for the user\'s confirmation — with a UI the tool blocks on a confirmation prompt; without one the phase stays pending until the user confirms). Do not attempt to bypass a locked phase; report it to the user instead.',
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: ['enable', 'phase', 'complete', 'confirm', 'redo', 'force'],
+        enum: ['enable', 'phase', 'complete'],
         description: 'Gate operation.',
       },
       manifestFile: { type: 'string', description: 'Manifest path override. Defaults to <cwd>/dsh_manifest/manifest.json.' },
-      phase: { type: 'string', enum: ['business', 'data-understanding', 'data-collection', 'data-cleaning', 'split', 'preprocessing', 'modeling', 'evaluation', 'deployment', 'done'], description: 'Target phase for complete/confirm/redo/force.' },
-      reason: { type: 'string', description: 'force: why the verification is being overridden.' },
+      phase: { type: 'string', enum: ['business', 'data-understanding', 'data-collection', 'data-cleaning', 'split', 'preprocessing', 'modeling', 'evaluation', 'deployment', 'done'], description: 'Target phase for complete.' },
     },
     output: {
       schema: {
@@ -711,7 +710,7 @@ export function apply(ctx: Context): void {
         text: value.gates.map(g => `${g.phase}: ${g.status}${g.overrideReason ? ` (forced: ${g.overrideReason})` : ''}`).join(' | '),
       }],
     },
-    async execute(args, _exec) {
+    async execute(args, exec) {
       const file = args.manifestFile ?? join(process.cwd(), 'dsh_manifest', MANIFEST_FILENAME)
       const m = await loadManifest(file)
       const gates = m.phaseGates
@@ -729,36 +728,45 @@ export function apply(ctx: Context): void {
       const phase = args.phase as ManifestPhase
       if (args.action === 'phase') return renderGates(m.phase, gates)
 
-      if (args.action === 'complete') {
-        const missing = verifyExitConditions(phase, m)
-        if (missing.length > 0) {
-          throw new Error(`dm: cannot complete "${phase}" — missing: ${missing.join(', ')}`)
+      // complete: verify, mark pending, then ask the USER. The model can never
+      // confirm its own completion; with a confirmation channel the tool blocks
+      // until the user answers, without one the phase stays pending.
+      const missing = verifyExitConditions(phase, m)
+      if (missing.length > 0) {
+        throw new Error(`dm: cannot complete "${phase}" — missing: ${missing.join(', ')}`)
+      }
+      const pendingGates = requestComplete(gates, phase)
+      await saveManifest(file, { ...m, phaseGates: pendingGates })
+
+      const userQuestions = ctx.get('userQuestions')
+      if (userQuestions !== undefined) {
+        const result = await userQuestions.ask({
+          questions: [{
+            id: `dm-confirm-${phase}`,
+            question: `数据挖掘门禁：阶段 "${phase}" 提交完成，请确认。确认后解锁下一阶段；不确认则回到可执行状态，agent 继续完善。`,
+            options: [
+              { label: '确认完成', description: '接受该阶段产出，解锁下一阶段' },
+              { label: '不确认，继续完善', description: '驳回，回到该阶段可执行状态' },
+            ],
+          }],
+          ...(exec.agent !== undefined ? { agent: exec.agent } : {}),
+          signal: exec.signal,
+        })
+        const approved = result.answers[0]?.selected.includes('确认完成') ?? false
+        if (approved) {
+          const doneGates = confirmComplete(pendingGates, phase)
+          const next = nextPhase(phase) ?? phase
+          await saveManifest(file, { ...m, phaseGates: doneGates, phase: next })
+          return renderGates(next, doneGates)
         }
-        const nextGates = requestComplete(gates, phase)
-        await saveManifest(file, { ...m, phaseGates: nextGates })
-        return renderGates(m.phase, nextGates)
+        // user rejected: roll back to unlocked so the agent can keep working
+        const reopened = redoPhase(pendingGates, phase)
+        await saveManifest(file, { ...m, phaseGates: reopened, phase })
+        return renderGates(phase, reopened)
       }
-      if (args.action === 'confirm') {
-        const nextGates = confirmComplete(gates, phase)
-        const next = nextPhase(phase) ?? phase
-        const updated = { ...m, phaseGates: nextGates, phase: next }
-        await saveManifest(file, updated)
-        return renderGates(next, nextGates)
-      }
-      if (args.action === 'redo') {
-        const nextGates = redoPhase(gates, phase)
-        const updated = { ...m, phaseGates: nextGates, phase }
-        await saveManifest(file, updated)
-        return renderGates(phase, nextGates)
-      }
-      if (args.action === 'force') {
-        const nextGates = forceComplete(gates, phase, args.reason ?? 'user forced')
-        const next = nextPhase(phase) ?? phase
-        const updated = { ...m, phaseGates: nextGates, phase: next }
-        await saveManifest(file, updated)
-        return renderGates(next, nextGates)
-      }
-      throw new Error(`dm: unknown action ${String(args.action)}`)
+      // No confirmation channel (headless/tests): stay pending until someone
+      // confirms. This is the gate being a gate — nothing moves without a user.
+      return renderGates(m.phase, pendingGates)
     },
   }))
 
