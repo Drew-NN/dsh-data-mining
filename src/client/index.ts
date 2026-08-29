@@ -20,8 +20,9 @@ import { DockBar } from './DockBar.tsx'
 export { DockBar } from './DockBar.tsx'
 export type { DockBarActions } from './slots.ts'
 
-/** Required services for the dock entry. */
-export const inject = ['slots', 'sessions', 'remote']
+/** Required services for the dock entry. `remote.commands` is its own
+ * injection seat (as in ui-plan) — `remote` alone does not provide it. */
+export const inject = ['slots', 'sessions', 'remote', 'remote.commands']
 
 /** Browser plugin body: the worker dock entry. */
 export function apply(ctx: ClientContext): void {
