@@ -18,10 +18,16 @@ export function parseStatusLines(text: string): Array<{ icon: string; label: str
  * exists (we cannot know worker sessions yet, so the chip just refreshes and
  * reports the current summary).
  */
-/** The worker roster: label → preset id (created on demand by the dock). */
-const WORKERS: Array<{ label: string; preset: string }> = [
-  { label: '数据理解工人', preset: 'data-mining-understanding' },
-  { label: '建模工人', preset: 'data-mining-modeling' },
+/** The worker roster: label → role instructions (sent as the first prompt). */
+const WORKERS: Array<{ label: string; role: string }> = [
+  {
+    label: '数据理解工人',
+    role: '你是数据理解工人（数据挖掘流水线的一员）。请先读取工作区的 dsh_manifest/manifest.json（若不存在视为全新开始），然后探查数据，用 manifest 工具把数据地图、质量发现、可疑字段记入（add_dataset，set_phase data-understanding），完成后向用户汇报。',
+  },
+  {
+    label: '建模工人',
+    role: '你是建模工人（数据挖掘流水线的一员）。开工前必须先读 dsh_manifest/manifest.json 检查前置阶段进度：数据理解（datasets 有记录）和切分（split 有引用）都完成，才能开始切分、特征工程、建模、评估。前置未完成时不要绕过——向用户反馈"前置阶段 X 还没完成"，然后停下等待指示。',
+  },
 ]
 
 export function DockBar({ sessionId, getAgentPreset, refreshStatus, spawnWorker, openSession, ..._rest }: DockBarProps) {
@@ -32,10 +38,10 @@ export function DockBar({ sessionId, getAgentPreset, refreshStatus, spawnWorker,
   const [error, setError] = useState<string | undefined>(undefined)
   const [spawning, setSpawning] = useState<string | undefined>(undefined)
 
-  const spawn = async (worker: { label: string; preset: string }) => {
-    setSpawning(worker.preset)
+  const spawn = async (worker: { label: string; role: string }) => {
+    setSpawning(worker.label)
     try {
-      await spawnWorker(worker.preset)
+      await spawnWorker(worker.role)
     } catch (e) {
       setError(e instanceof Error ? e.message : `无法启动${worker.label}`)
     } finally {
@@ -80,7 +86,7 @@ export function DockBar({ sessionId, getAgentPreset, refreshStatus, spawnWorker,
       <span style={{ fontWeight: 600, marginRight: 4 }}>数据挖掘</span>
       {WORKERS.map(w => (
         <button
-          key={w.preset}
+          key={w.label}
           type="button"
           title={`打开${w.label}会话`}
           disabled={spawning !== undefined}
@@ -90,7 +96,7 @@ export function DockBar({ sessionId, getAgentPreset, refreshStatus, spawnWorker,
             borderRadius: 10, padding: '1px 8px', cursor: 'pointer', fontSize: 12,
           }}
         >
-          {spawning === w.preset ? '启动中…' : `👷 ${w.label}`}
+          {spawning === w.label ? '启动中…' : `👷 ${w.label}`}
         </button>
       ))}
       {error !== undefined ? (

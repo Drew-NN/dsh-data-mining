@@ -720,8 +720,8 @@ describe('preset auto-install', () => {
     tempDirs.push(home)
     const { ensurePresetsInstalled } = await import('../src/presets.ts')
     const written = await ensurePresetsInstalled(home)
-    expect(written.sort()).toEqual(['data-mining', 'data-mining-modeling', 'data-mining-understanding'])
-    for (const id of ['data-mining', 'data-mining-understanding', 'data-mining-modeling']) {
+    expect(written).toEqual(['data-mining'])
+    for (const id of ['data-mining']) {
       const content = await readFile(join(home, '.agent-presets', id, 'agent.cordis.yml'), 'utf8')
       expect(content).toContain('/tools')
     }

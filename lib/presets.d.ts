@@ -1,5 +1,5 @@
 /** Preset ids shipped by this package and installed into the user root. */
-export declare const SHIPPED_PRESETS: readonly ["data-mining", "data-mining-understanding", "data-mining-modeling"];
+export declare const SHIPPED_PRESETS: readonly ["data-mining"];
 /** The user preset root; overridable for tests. */
 export declare function userPresetRoot(dshHome?: string | undefined): string;
 /**

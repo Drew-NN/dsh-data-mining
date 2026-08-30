@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 /** Preset ids shipped by this package and installed into the user root. */
-export const SHIPPED_PRESETS = ['data-mining', 'data-mining-understanding', 'data-mining-modeling'] as const
+export const SHIPPED_PRESETS = ['data-mining'] as const
 
 /** The package's own preset sources (shipped inside `presets/`). */
 const PRESETS_SRC = fileURLToPath(new URL('../presets/', import.meta.url))

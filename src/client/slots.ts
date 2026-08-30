@@ -10,9 +10,9 @@ export interface DockBarActions {
   openSession: (id: string) => void
   /**
    * Spawn a worker session in this workspace: create a blank session, apply
-   * the worker's preset (which carries its persona and the data-mining
-   * tools), and open it.
-   * @param workerPreset - the worker preset id (e.g. data-mining-understanding).
+   * the data-mining preset (tools + persona), inject the worker role as the
+   * first message, and open it.
+   * @param roleMessage - the worker role instructions sent as the first prompt.
    */
-  spawnWorker: (workerPreset: string) => Promise<void>
+  spawnWorker: (roleMessage: string) => Promise<void>
 }

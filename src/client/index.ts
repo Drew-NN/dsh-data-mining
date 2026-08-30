@@ -44,13 +44,24 @@ export function apply(ctx: ClientContext): void {
         getAgentPreset: () => sessions.list.byId[sessionId]?.agentPreset,
         refreshStatus: () => ctx.remote.commands.execute(sessionId, '/dm status'),
         openSession: (id: SessionId) => sessions.open(id),
-        spawnWorker: async (workerPreset: string) => {
+        spawnWorker: async (roleMessage: string) => {
           const created = await sessions.create(
             workspaceCwd === undefined ? {} : { cwd: workspaceCwd },
           )
+          // Workers are sessions under the ONE data-mining preset (tools +
+          // persona); the role difference comes from the injected first
+          // message, so the preset roster stays a single entry.
           const select = connection?.api?.agentPresets?.select
           if (select !== undefined) {
-            await select({ sessionId: created, agentPreset: workerPreset })
+            await select({ sessionId: created, agentPreset: 'data-mining' })
+          }
+          const face = sessions.binding(created)?.session
+          if (face !== undefined) {
+            try {
+              await face.prompt([{ type: 'text', text: roleMessage }], 'queue')
+            } catch {
+              // Role injection is best-effort; the worker still opens.
+            }
           }
           sessions.open(created)
         },
