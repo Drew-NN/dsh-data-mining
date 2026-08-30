@@ -31,7 +31,6 @@
   "license": "MIT",
   "scripts": {
     "build": "rm -rf lib && tsdown && tsc -b --force tsconfig.json",
-    "prepare": "pnpm run build",
     "test": "vitest run",
     "build:client": "tsdown"
   },
