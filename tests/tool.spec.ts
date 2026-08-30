@@ -711,3 +711,37 @@ describe('bundled skills', () => {
 })
 
 
+
+describe('preset auto-install', () => {
+  it('writes the shipped presets into the user root on first boot', async () => {
+    const { mkdtemp, rm, readFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const home = await mkdtemp(join(tmpdir(), 'dsh-presets-home-'))
+    tempDirs.push(home)
+    const { ensurePresetsInstalled } = await import('../src/presets.ts')
+    const written = await ensurePresetsInstalled(home)
+    expect(written.sort()).toEqual(['data-mining', 'data-mining-modeling', 'data-mining-understanding'])
+    for (const id of ['data-mining', 'data-mining-understanding', 'data-mining-modeling']) {
+      const content = await readFile(join(home, '.agent-presets', id, 'agent.cordis.yml'), 'utf8')
+      expect(content).toContain('/tools')
+    }
+    // second run is a no-op
+    const again = await ensurePresetsInstalled(home)
+    expect(again).toEqual([])
+  })
+
+  it('replaces a legacy preset row that references the global entry', async () => {
+    const { mkdtemp, rm, mkdir, writeFile, readFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const home = await mkdtemp(join(tmpdir(), 'dsh-presets-legacy-'))
+    tempDirs.push(home)
+    const dir = join(home, '.agent-presets', 'data-mining')
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'agent.cordis.yml'), "- id: data-mining\n  name: '@deepseek-ai/dsh-data-mining'\n")
+    const { ensurePresetsInstalled } = await import('../src/presets.ts')
+    const written = await ensurePresetsInstalled(home)
+    expect(written).toContain('data-mining')
+    const content = await readFile(join(dir, 'agent.cordis.yml'), 'utf8')
+    expect(content).toContain('/tools')
+  })
+})

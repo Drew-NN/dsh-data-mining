@@ -13,12 +13,16 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { dmStatusCommand, type DmCommandResult } from './command.ts'
+import { ensurePresetsInstalled } from './presets.ts'
 
 /** Cordis plugin name. */
 export const name = 'data-mining'
 
 /** Register the /dm status host command (no tool registrations here). */
 export function apply(ctx: Context): void {
+  // Make the data-mining presets available on first boot (idempotent;
+  // never overwrites a user-authored composition).
+  void ensurePresetsInstalled().catch(() => {})
   const commands = ctx.get('commands') as
     | { register(cmd: { name: string; description: string; input: { hint: string }; handler: (i: { rawInput: string; agent?: { session?: { header?: { cwd?: string } } } }) => DmCommandResult | Promise<DmCommandResult> }): void }
     | undefined

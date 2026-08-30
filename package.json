@@ -30,7 +30,8 @@
     "cordis.patch.yml",
     "lib",
     "skills",
-    "README.md"
+    "README.md",
+    "presets"
   ],
   "license": "MIT",
   "scripts": {
