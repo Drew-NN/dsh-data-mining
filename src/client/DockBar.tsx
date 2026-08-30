@@ -38,7 +38,11 @@ export function DockBar({ sessionId, refreshStatus, openSession, ..._rest }: Doc
     }
   }
 
-  useEffect(() => { void refresh() }, [refresh])
+  // Refresh exactly once on mount. `refresh` is recreated every render, so it
+  // must NOT be an effect dependency — listing it would loop (refresh →
+  // setState → rerender → new refresh → refresh …). Manual refresh is the
+  // button's job.
+  useEffect(() => { void refresh() }, [])
 
   const stages = parseStatusLines(status)
 
