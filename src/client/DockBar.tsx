@@ -18,7 +18,10 @@ export function parseStatusLines(text: string): Array<{ icon: string; label: str
  * exists (we cannot know worker sessions yet, so the chip just refreshes and
  * reports the current summary).
  */
-export function DockBar({ sessionId, refreshStatus, openSession, ..._rest }: DockBarProps) {
+export function DockBar({ sessionId, getAgentPreset, refreshStatus, openSession, ..._rest }: DockBarProps) {
+  // Only render inside a 数据挖掘模式 (data-mining) session; everywhere else
+  // the dock stays out of the way so it cannot disturb other presets.
+  const agentPreset = getAgentPreset()
   const [status, setStatus] = useState<string>('')
   const [error, setError] = useState<string | undefined>(undefined)
 
@@ -42,7 +45,9 @@ export function DockBar({ sessionId, refreshStatus, openSession, ..._rest }: Doc
   // must NOT be an effect dependency — listing it would loop (refresh →
   // setState → rerender → new refresh → refresh …). Manual refresh is the
   // button's job.
-  useEffect(() => { void refresh() }, [])
+  useEffect(() => { if (agentPreset === 'data-mining') void refresh() }, [])
+
+  if (agentPreset !== 'data-mining') return null
 
   const stages = parseStatusLines(status)
 

@@ -34,6 +34,7 @@ export function apply(ctx: ClientContext): void {
     order: 20,
     inject: (sessionId: SessionId): DockBarActions => ({
       sessionId,
+      getAgentPreset: () => sessions.list.byId[sessionId]?.agentPreset,
       refreshStatus: () => ctx.remote.commands.execute(sessionId, '/dm status'),
       openSession: (id: SessionId) => sessions.open(id),
     }),
