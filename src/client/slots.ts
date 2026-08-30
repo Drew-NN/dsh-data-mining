@@ -8,4 +8,11 @@ export interface DockBarActions {
   refreshStatus: () => Promise<{ text?: string; error?: { message?: string } }>
   /** Open (switch to) a session by id. */
   openSession: (id: string) => void
+  /**
+   * Spawn a worker session in this workspace: create a blank session, apply
+   * the worker's preset (which carries its persona and the data-mining
+   * tools), and open it.
+   * @param workerPreset - the worker preset id (e.g. data-mining-understanding).
+   */
+  spawnWorker: (workerPreset: string) => Promise<void>
 }

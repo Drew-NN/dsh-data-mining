@@ -21,8 +21,10 @@ export { DockBar } from './DockBar.tsx'
 export type { DockBarActions } from './slots.ts'
 
 /** Required services for the dock entry. `remote.commands` is its own
- * injection seat (as in ui-plan) — `remote` alone does not provide it. */
-export const inject = ['slots', 'sessions', 'remote', 'remote.commands']
+ * injection seat (as in ui-plan) — `remote` alone does not provide it;
+ * `connection` exposes the api.agentPresets remote used to apply a worker
+ * preset to a fresh session. */
+export const inject = ['slots', 'sessions', 'remote', 'remote.commands', 'connection']
 
 /** Browser plugin body: the worker dock entry. */
 export function apply(ctx: ClientContext): void {
@@ -32,11 +34,27 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.input.dock',
     id: 'data-mining-dock',
     order: 20,
-    inject: (sessionId: SessionId): DockBarActions => ({
-      sessionId,
-      getAgentPreset: () => sessions.list.byId[sessionId]?.agentPreset,
-      refreshStatus: () => ctx.remote.commands.execute(sessionId, '/dm status'),
-      openSession: (id: SessionId) => sessions.open(id),
-    }),
+    inject: (sessionId: SessionId): DockBarActions => {
+      const connection = ctx.get('connection') as
+        | { api?: { agentPresets?: { select(o: { sessionId: string; agentPreset: string }): Promise<unknown> } } }
+        | undefined
+      const workspaceCwd = sessions.list.byId[sessionId]?.cwd
+      return {
+        sessionId,
+        getAgentPreset: () => sessions.list.byId[sessionId]?.agentPreset,
+        refreshStatus: () => ctx.remote.commands.execute(sessionId, '/dm status'),
+        openSession: (id: SessionId) => sessions.open(id),
+        spawnWorker: async (workerPreset: string) => {
+          const created = await sessions.create(
+            workspaceCwd === undefined ? {} : { cwd: workspaceCwd },
+          )
+          const select = connection?.api?.agentPresets?.select
+          if (select !== undefined) {
+            await select({ sessionId: created, agentPreset: workerPreset })
+          }
+          sessions.open(created)
+        },
+      }
+    },
   }, DockBar))
 }
