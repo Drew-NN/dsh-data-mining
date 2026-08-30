@@ -1,23 +1,18 @@
 /**
- * dsh-data-mining — one installable data-mining agent for DeepSeek Harness.
+ * dsh-data-mining — global plugin entry.
  *
- * Registers the data-profiling tools (`profile_dataset`, `sample_rows`) on
- * `ctx.tools` and the bundled data-mining skills on `ctx.skills`. The persona
- * lives in `cordis.patch.yml` (the bundle's patch layer), so installing this
- * bundle adds the whole data-mining agent to a profile.
+ * Installed into the web profile, this entry registers ONLY the /dm status
+ * host command (harmless everywhere). The data-mining TOOLS and skills are
+ * registered by the preset-only entry (`./tools.ts`, mounted by the
+ * 数据挖掘模式 preset), and the browser dock is preset-gated — so sessions
+ * under other presets are untouched. The persona lives in the preset
+ * composition, not here.
  *
  * @module @deepseek-ai/dsh-data-mining
  */
 import type { Context } from '@deepseek-ai/cordis';
 /** Cordis plugin name. */
 export declare const name = "data-mining";
-/** Services required by the tools and the bundled skill provider. */
-export declare const inject: string[];
-/**
- * Register the data-mining tools and bundled skill provider.
- * @param ctx - registrant context carrying the tool and skill registries.
- */
+/** Register the /dm status host command (no tool registrations here). */
 export declare function apply(ctx: Context): void;
-/** Verify a phase's machine-checkable exit conditions; returns what is missing. */
-/** Render the gate layout as an ordered array for the dm tool's output. */
 //# sourceMappingURL=index.d.ts.map

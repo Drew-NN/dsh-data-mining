@@ -298,5 +298,5 @@
 # value_counts / discover_datasets), split guardrails (split_dataset /
 # check_leakage), and the workspace ledger (manifest). The persona above and
 # these tools together make this preset a data-mining agent.
-- id: data-mining
-  name: '@deepseek-ai/dsh-data-mining'
+- id: data-mining-tools
+  name: '@deepseek-ai/dsh-data-mining/tools'

@@ -10,6 +10,7 @@ import { CallId } from '@deepseek-ai/dsh-llm'
 
 import * as profile from '../src/profile.ts'
 import * as plugin from '../src/index.ts'
+import * as toolsPlugin from '../src/tools.ts'
 
 const testToolSignal = new AbortController().signal
 
@@ -32,7 +33,8 @@ async function setup(): Promise<Context> {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(SkillRegistry)
-  await ctx.plugin(plugin)
+  await ctx.plugin(plugin) // global entry: /dm command only
+  await ctx.plugin(toolsPlugin) // preset entry: tools + skills
   return ctx
 }
 

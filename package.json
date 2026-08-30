@@ -20,6 +20,10 @@
     "./package.json": "./package.json",
     "./client": {
       "default": "./lib/client.js"
+    },
+    "./tools": {
+      "types": "./lib/types/tools.d.ts",
+      "default": "./lib/tools.js"
     }
   },
   "files": [
